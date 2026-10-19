@@ -28,6 +28,32 @@ Host 半身只在启动时加载一次，浏览器半身（状态条/详情面�
 验证：输入框下方出现模型状态条；`/route status` 能列出模型组；
 `model_orchestrator {"action":"status"}` 的 `catalog.total` > 0。
 
+### 依赖
+
+**本插件没有 npm 依赖**（`package.json` 里没有 `dependencies`），只 import Node 内置模块和它自己的 `src/`。
+模型清单来自内核的 LLM 注册表（`llm.listProviders/listModels/resolveModelInfo`），
+**不硬编码任何渠道**——你登录哪条渠道，它就路由哪条。
+
+**`dsh-our-free-model`（OFM）不是前置条件。** 两者没有代码依赖，也没有互相 import：
+OFM 只是往本机写了几个状态文件，本插件在读得到时把它们当**额外信号**用，读不到就当「没有信号」。
+
+| 文件 | 由谁写 | 不装 OFM 时 |
+| --- | --- | --- |
+| `$DSH_HOME/our-free-model/availability.json` | OFM | 免费车道的可用/不可用判定缺失，该渠道按「未知」处理 |
+| `$DSH_HOME/our-free-model/stats.json` | OFM | 免费车道的今日用量缺失，用量项按 0 计 |
+| `$DSH_HOME/channel-pack/state.json` | OFM（内嵌 channel pack） | 拿不到每账号每模型的限流解禁时间，冷却判定改用本插件自己观测到的失败 |
+| `$DSH_HOME/channel-pack/token-ledger.json` | OFM | 少了第二优先的延迟证据，延迟只认本插件实测和报告值 |
+
+也就是说：**不装 OFM 照样路由**，只是少一层来自渠道面板的旁证，多依赖本插件自己实测的流量账本
+（`llm/stream` 观测，始终可用）。`signal()` 在文件缺失时返回 `available: null`（未知），
+不是 `false`（不可用）——未知不会被判成坏渠道。
+
+想彻底关掉这两个来源：配置里 `channelData: false` 和 `freeModelData: false`。
+
+**证据**：集成测试 `tools/integration.mjs` 把 `DSH_HOME` 指向一个空临时目录
+（既没有 `our-free-model/` 也没有 `channel-pack/`），在这个前提下加载真实的 Host 半身、
+跑通路由、失败换渠道、偏好模式与暂停恢复——27 项全过。
+
 ---
 
 ## 它解决什么
