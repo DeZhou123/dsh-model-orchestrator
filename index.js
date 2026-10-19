@@ -514,7 +514,7 @@ export function apply(ctx, rawConfig = {}) {
   function effectiveMode(state) {
     const config = runtime.config
     if (config.mode !== 'prefer') return config.mode
-    if (state !== null && state.preferenceSuspended && config.preferAutoResume !== true) {
+    if (state?.preferenceSuspended === true && config.preferAutoResume !== true) {
       return config.preferFallback
     }
     return 'prefer'
@@ -1079,7 +1079,7 @@ export function apply(ctx, rawConfig = {}) {
 
   function preferenceView(state) {
     const config = runtime.config
-    const mode = effectiveMode(state)
+    const mode = effectiveMode(state ?? null)
     const input = state === undefined
       ? { rows: catalog.current.rows, health, config, anchor: null, needs: readNeeds({}, config) }
       : selectionInput(state)
