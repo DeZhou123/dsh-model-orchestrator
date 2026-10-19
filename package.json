@@ -1,7 +1,6 @@
 {
   "name": "dsh-model-orchestrator",
   "version": "2.0.0",
-  "private": true,
   "type": "module",
   "description": "两级模型调度：先在模型层选最优模型，再在渠道层选该模型的最佳渠道；失败先换渠道再换模型，并有偏好模式（锁定一个模型，用尽所有渠道后才降级并提醒）。实时显示额度/健康/用量。",
   "main": "./index.js",
@@ -49,6 +48,14 @@
         "@deepseek-ai/dsh-client-ui-conversation"
       ]
     }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DeZhou123/dsh-model-orchestrator.git"
+  },
+  "homepage": "https://github.com/DeZhou123/dsh-model-orchestrator#readme",
+  "bugs": {
+    "url": "https://github.com/DeZhou123/dsh-model-orchestrator/issues"
   },
   "license": "MIT"
 }
