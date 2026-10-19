@@ -7,6 +7,29 @@
 
 ---
 
+## 安装
+
+需要一个已经装好的 DSH（Desktop 或 `dsh web`）。
+
+```bash
+# 1) 把仓库放到任意目录，然后作为一个本地 link 依赖装进你的 DSH profile
+cd ~/.dsh/profiles/web
+pnpm add link:/absolute/path/to/dsh-model-orchestrator
+```
+
+```bash
+# 2) 把 dsh-model-orchestrator 加进 ~/.dsh/profiles/web/package.json 的
+#    dsh.profile.bundles 数组（漏了这一步插件不会被加载）
+# 3) 重启一次 DSH Desktop（或 dsh web）
+```
+
+Host 半身只在启动时加载一次，浏览器半身（状态条/详情面板）由 HMR 或刷新页面加载。
+
+验证：输入框下方出现模型状态条；`/route status` 能列出模型组；
+`model_orchestrator {"action":"status"}` 的 `catalog.total` > 0。
+
+---
+
 ## 它解决什么
 
 你手上有十几条免费/低价渠道，同一个模型（比如 `glm-5.3`）往往在 4~6 条渠道上都有。
@@ -240,8 +263,7 @@ node tools/integration.mjs  # 22 项：用 mock Cordis 上下文加载真实 Hos
 
 ## 部署动作
 
-- 插件已以 `link:E:/06AI/00DeeSeekHarness/dsh-model-orchestrator` 装在 web profile，
-  并已加入 `dsh.profile.bundles`。
+- 以 `link:<你的插件目录>` 装在 web profile，并已加入 `dsh.profile.bundles`。
 - **Host 半身改动需要重启一次 DSH Desktop（或 `dsh web`）才会加载**；浏览器半身由 HMR/刷新加载。
 - 重启后确认：状态条显示真实模型；`/route status` 能列出模型组；
   `model_orchestrator { "action": "status" }` 的 `catalog.total` > 0。

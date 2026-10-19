@@ -20,9 +20,14 @@ import { resolveFamily, normalizeModelId } from '../src/families.js'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '..')
 
-const DEFAULT_REPORT = 'C:/Users/11096/.dsh/attachments/v1/files/79/7976490ccfd4c2e5019dcbe5e961c89dd89c2c8db906564af1e319a14da24046/REPORT-模型测速与优先级.md'
+const DEFAULT_REPORT = process.env.DSH_MODEL_REPORT ?? path.join(ROOT, 'REPORT-模型测速与优先级.md')
 
 const reportPath = process.argv[2] ?? DEFAULT_REPORT
+if (!fs.existsSync(reportPath)) {
+  console.error(`report not found: ${reportPath}`)
+  console.error('usage: node tools/build-data.mjs <REPORT-模型测速与优先级.md>   (or set DSH_MODEL_REPORT)')
+  process.exit(2)
+}
 const markdown = fs.readFileSync(reportPath, 'utf8')
 const report = parseReport(markdown)
 
