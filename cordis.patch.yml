@@ -1,0 +1,12 @@
+# dsh-model-orchestrator bundle patch.
+#
+# One row mounts the Host half; the browser half is declared by `dsh.client` in
+# package.json and binds to the row whose `name` is the bare package name.
+#
+# `config: {}` is deliberate. Anything pinned here (for example `strategy`)
+# outranks the settings the panel writes, because the patch layer wins over the
+# panel's overrides by design. Leave it empty unless you want to lock a value.
+- insert:
+    - id: model-orchestrator
+      name: 'dsh-model-orchestrator'
+      config: {}

@@ -1,0 +1,2822 @@
+{
+  "source": {
+    "reportVersion": "2.1.0",
+    "generatedAt": "2026/10/14",
+    "parsedAt": "2026-10-18T09:23:15.325Z",
+    "reportPath": "E:\\06AI\\00DeeSeekHarness\\REPORT-模型测速与优先级.md",
+    "modelCount": 114,
+    "familyCount": 73,
+    "laneCount": 12
+  },
+  "canonical": {
+    "mimo-v2.6-pro": "mimo-v2.6-pro",
+    "qwen3.8-max": "qwen3.8-max",
+    "glm-5.3": "glm-5.3",
+    "step-5-preview": "step-5-preview",
+    "kimi-k3": "kimi-k3",
+    "glm-5.3-flash": "glm-5.3-flash",
+    "ling-3.1-flash": "ling-3.1-flash",
+    "deepseek-v4.1-flash": "deepseek-v4.1-flash",
+    "mimo-v2.6-flash": "mimo-v2.6-flash",
+    "deepseek-v4-pro": "deepseek-v4-pro",
+    "deepseek-v4-flash": "deepseek-v4-flash",
+    "glm-5.2": "glm-5.2",
+    "minimax-m3": "minimax-m3",
+    "kimi-k2.6": "kimi-k2.6",
+    "kimi-k2.7-code": "kimi-k2.7-code",
+    "glm-5.1": "glm-5.1",
+    "qwen3.7-plus": "qwen3.7-plus",
+    "nemotron-3-ultra-550b-a55b": "nemotron-3-ultra-550b-a55b",
+    "minimax-m2.7": "minimax-m2.7",
+    "nemotron-3.5-lightning": "nemotron-3.5-lightning",
+    "nemotron-3-super-120b-a12b": "nemotron-3-super-120b-a12b",
+    "north-mini-code": "north-mini-code",
+    "gpt-oss-20b": "gpt-oss-20b",
+    "deepseek-v3": "deepseek-v3",
+    "kimi-k2.5": "kimi-k2.5",
+    "glm-5v-turbo": "glm-5v-turbo",
+    "deepseek-v3.1": "deepseek-v3.1",
+    "code-review-judge": "code-review-judge",
+    "glm-5": "glm-5",
+    "lfm-2.5-2.6b": "lfm-2.5-2.6b",
+    "qwen3.6-plus": "qwen3.6-plus",
+    "doubao-seed-code": "doubao-seed-code",
+    "glm-4.7": "glm-4.7",
+    "qwen3.8-flash": "qwen3.8-flash",
+    "doubao-2.0-mini": "doubao-2.0-mini",
+    "kimi-k2.7-code-highspeed": "kimi-k2.7-code-highspeed",
+    "minimax-m3.1-flash-preview": "minimax-m3.1-flash-preview",
+    "qwen3.8-omni-flash": "qwen3.8-omni-flash",
+    "deepseek-flash": "deepseek-flash",
+    "multimodal_image_kimi-k2.5": "multimodal_image_kimi-k2.5",
+    "kilo-auto": "kilo-auto",
+    "deepseek-v4-flash-vision-exp": "deepseek-v4-flash-vision-exp",
+    "doubao-seed-2.0-code": "doubao-seed-2.0-code",
+    "kimi-k2.8-preview": "kimi-k2.8-preview",
+    "doubao-seed-2.1-turbo": "doubao-seed-2.1-turbo",
+    "space-bunny": "space-bunny",
+    "mimo-v2.5": "mimo-v2.5",
+    "nemotron-3-nano-omni-30b-a3b-reasoning": "nemotron-3-nano-omni-30b-a3b-reasoning",
+    "glm-5.3-flashx": "glm-5.3-flashx",
+    "hunyuan-hy3": "hunyuan-hy3",
+    "kimi-k2.7": "kimi-k2.7",
+    "doubao-seed-2.1-pro": "doubao-seed-2.1-pro",
+    "auto-router": "auto-router",
+    "nemotron-3.5-content-safety": "nemotron-3.5-content-safety",
+    "qwen3.7-max": "qwen3.7-max",
+    "qwen3.5-plus": "qwen3.5-plus",
+    "minimax-m2.7-highspeed": "minimax-m2.7-highspeed",
+    "sensenova-6.8-flash-lite": "sensenova-6.8-flash-lite",
+    "doubao-seed-evolving": "doubao-seed-evolving",
+    "glyph-cluster": "glyph-cluster",
+    "laguna-s-2.1": "laguna-s-2.1",
+    "hunyuan-hy4-preview": "hunyuan-hy4-preview",
+    "dots-3-note-preview": "dots-3-note-preview",
+    "spark-x2.5": "spark-x2.5",
+    "longcat-2.5": "longcat-2.5",
+    "doubao-seed-2-0-code-preview": "doubao-seed-2-0-code-preview",
+    "laguna-xs-2.1": "laguna-xs-2.1",
+    "qwen3.5": "qwen3.5",
+    "sensenova-6.8-flash": "sensenova-6.8-flash",
+    "qwen3.7-flash": "qwen3.7-flash",
+    "glm-5.2-arkts-spark": "glm-5.2-arkts-spark",
+    "openpangu-2.0-flash": "openpangu-2.0-flash",
+    "openpangu-2.0-pro": "openpangu-2.0-pro"
+  },
+  "families": {
+    "mimo-v2.6-pro": {
+      "intel": 46,
+      "ttftMs": 2913,
+      "score": 69.8,
+      "fastestLane": "TRAE 字节",
+      "note": "top open-weight; $0.13/task",
+      "estimated": false
+    },
+    "qwen3.8-max": {
+      "intel": 45,
+      "ttftMs": 955,
+      "score": 78,
+      "fastestLane": "LobsterAI 有道",
+      "note": "slow (36.5 tok/s), very verbose",
+      "estimated": false
+    },
+    "glm-5.3": {
+      "intel": 45,
+      "ttftMs": 1042,
+      "score": 77.3,
+      "fastestLane": "Qoder 中国版 阿里",
+      "note": "Z.ai current flagship; strong agentic coding",
+      "estimated": false
+    },
+    "step-5-preview": {
+      "intel": 44,
+      "ttftMs": 828,
+      "score": 77.8,
+      "fastestLane": "免费车道 (免密)",
+      "note": "thinking mandatory; DeepSWE 67.7% (vendor)",
+      "estimated": false
+    },
+    "kimi-k3": {
+      "intel": 44,
+      "ttftMs": 1885,
+      "score": 70.7,
+      "fastestLane": "TRAE 字节",
+      "note": "AA entry = (max); (low)=30 -> effort spread 14",
+      "estimated": false
+    },
+    "glm-5.3-flash": {
+      "intel": 42,
+      "ttftMs": 995,
+      "score": 73.4,
+      "fastestLane": "Qoder 中国版 阿里",
+      "note": "vendor claims 57 = AA overclaim; claims Opus-4",
+      "estimated": false
+    },
+    "ling-3.1-flash": {
+      "intel": 41,
+      "ttftMs": 1854,
+      "score": 66.5,
+      "fastestLane": "免费车道 (免密)",
+      "note": "212 tok/s, very verbose",
+      "estimated": false
+    },
+    "deepseek-v4.1-flash": {
+      "intel": 39,
+      "ttftMs": 1364,
+      "score": 66.3,
+      "fastestLane": "Raccoon 商汤",
+      "note": "CORRECTED 25->39 on 2026-10-13: AA page = reas",
+      "estimated": false
+    },
+    "mimo-v2.6-flash": {
+      "intel": 38,
+      "ttftMs": 6134,
+      "score": 51.8,
+      "fastestLane": "TRAE 字节",
+      "note": "WEAK for agents: Terminal-Bench 4.0 only 23%",
+      "estimated": false
+    },
+    "deepseek-v4-pro": {
+      "intel": 36,
+      "ttftMs": 1120,
+      "score": 63.7,
+      "fastestLane": "Qoder 中国版 阿里",
+      "note": "retired upstream -> auto-routes to V4.1-Flash",
+      "estimated": false
+    },
+    "deepseek-v4-flash": {
+      "intel": 34,
+      "ttftMs": 571,
+      "score": 66.7,
+      "fastestLane": "Qoder 中国版 阿里",
+      "note": "GDPval Elo 1559; TB2.1 79%; deprecated",
+      "estimated": false
+    },
+    "glm-5.2": {
+      "intel": 34,
+      "ttftMs": 1424,
+      "score": 58.7,
+      "fastestLane": "Qoder 中国版 阿里",
+      "note": "deprecated; June-2026 leading open coder",
+      "estimated": false
+    },
+    "minimax-m3": {
+      "intel": 29,
+      "ttftMs": 703,
+      "score": 57.7,
+      "fastestLane": "Loomy 讯飞",
+      "note": "supersedes M2.7; frontier coding + native mult",
+      "estimated": false
+    },
+    "kimi-k2.6": {
+      "intel": 27,
+      "ttftMs": 647,
+      "score": 55.5,
+      "fastestLane": "Loomy 讯飞",
+      "note": "former leading open-weights",
+      "estimated": false
+    },
+    "kimi-k2.7-code": {
+      "intel": 26,
+      "ttftMs": 898,
+      "score": 51.2,
+      "fastestLane": "LobsterAI 有道",
+      "note": "coding-specialised SKU; 26 < K2.6's 27 is SPEC",
+      "estimated": false
+    },
+    "glm-5.1": {
+      "intel": 26,
+      "ttftMs": 4117,
+      "score": 38,
+      "fastestLane": "CodeBuddy/WorkBuddy 腾讯",
+      "note": "MIT license",
+      "estimated": false
+    },
+    "qwen3.7-plus": {
+      "intel": 25,
+      "ttftMs": 3189,
+      "score": 38.7,
+      "fastestLane": "LobsterAI 有道",
+      "note": "slow (~55 tok/s)",
+      "estimated": false
+    },
+    "nemotron-3-ultra-550b-a55b": {
+      "intel": 23,
+      "ttftMs": 1139,
+      "score": 44.8,
+      "fastestLane": "免费车道 (免密)",
+      "note": "SWE-bench 70.7%; RULER@1M 91.75%",
+      "estimated": false
+    },
+    "minimax-m2.7": {
+      "intel": 23,
+      "ttftMs": 1982,
+      "score": 40,
+      "fastestLane": "Qoder 中国版 阿里",
+      "note": "NON-COMMERCIAL license",
+      "estimated": false
+    },
+    "nemotron-3.5-lightning": {
+      "intel": 13,
+      "ttftMs": 2019,
+      "score": 25.4,
+      "fastestLane": "免费车道 (免密)",
+      "note": "FASTEST measured: ~301 tok/s; SWE-bench 51.56%",
+      "estimated": false
+    },
+    "nemotron-3-super-120b-a12b": {
+      "intel": 13,
+      "ttftMs": 7069,
+      "score": 14.5,
+      "fastestLane": "免费车道 (免密)",
+      "note": "SWE-bench 60.47%; PinchBench 85.6%; degrades b",
+      "estimated": false
+    },
+    "north-mini-code": {
+      "intel": 10,
+      "ttftMs": 1861,
+      "score": 21.8,
+      "fastestLane": "免费车道 (免密)",
+      "note": "purpose-built agentic coder; LOWEST latency on",
+      "estimated": false
+    },
+    "gpt-oss-20b": {
+      "intel": 9,
+      "ttftMs": 34000,
+      "score": 5.8,
+      "fastestLane": "免费车道 (免密)",
+      "note": "tool-use ok, far below frontier",
+      "estimated": false
+    },
+    "deepseek-v3": {
+      "intel": 8,
+      "ttftMs": 1333,
+      "score": 21.8,
+      "fastestLane": "TRAE 字节",
+      "note": "non-reasoning; $0.02/task (cheapest)",
+      "estimated": false
+    },
+    "kimi-k2.5": {
+      "intel": null,
+      "estimatedIntel": 23,
+      "ttftMs": 392,
+      "score": null,
+      "fastestLane": "LobsterAI 有道",
+      "note": "AA ESTIMATE",
+      "estimated": true
+    },
+    "glm-5v-turbo": {
+      "intel": null,
+      "estimatedIntel": 23,
+      "ttftMs": 964,
+      "score": null,
+      "fastestLane": "TRAE 字节",
+      "note": "AA ESTIMATE; vision coding, text+image+VIDEO",
+      "estimated": true
+    },
+    "deepseek-v3.1": {
+      "intel": null,
+      "estimatedIntel": 14,
+      "ttftMs": 1464,
+      "score": null,
+      "fastestLane": "TRAE 字节",
+      "note": "AA ESTIMATE; non-reasoning; also served as cod",
+      "estimated": true
+    },
+    "code-review-judge": {
+      "intel": null,
+      "estimatedIntel": 14,
+      "ttftMs": 1681,
+      "score": null,
+      "fastestLane": "TRAE 字节",
+      "note": "serves DeepSeek-V3.1-Terminus; a judge role, n",
+      "estimated": true
+    },
+    "glm-5": {
+      "intel": null,
+      "estimatedIntel": 28,
+      "ttftMs": 2185,
+      "score": null,
+      "fastestLane": "LobsterAI 有道",
+      "note": "AA ESTIMATE - directional only",
+      "estimated": true
+    },
+    "lfm-2.5-2.6b": {
+      "intel": null,
+      "estimatedIntel": 8,
+      "ttftMs": 2223,
+      "score": null,
+      "fastestLane": "免费车道 (免密)",
+      "note": "AA flag: 'Estimate (independent evaluation for",
+      "estimated": true
+    },
+    "qwen3.6-plus": {
+      "intel": null,
+      "estimatedIntel": 27,
+      "ttftMs": 2594,
+      "score": null,
+      "fastestLane": "LobsterAI 有道",
+      "note": "AA ESTIMATE - directional only",
+      "estimated": true
+    },
+    "doubao-seed-code": {
+      "intel": null,
+      "estimatedIntel": 17,
+      "ttftMs": 3588,
+      "score": null,
+      "fastestLane": "TRAE 字节",
+      "note": "AA ESTIMATE",
+      "estimated": true
+    },
+    "glm-4.7": {
+      "intel": null,
+      "estimatedIntel": 22,
+      "ttftMs": 6946,
+      "score": null,
+      "fastestLane": "TRAE 字节",
+      "note": "AA ESTIMATE",
+      "estimated": true
+    },
+    "qwen3.8-flash": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 675,
+      "score": null,
+      "fastestLane": "Qoder 中国版 阿里",
+      "note": "no AA page (404); Flash-Next 40 is NOT a substitut",
+      "estimated": true,
+      "laneCount": 4
+    },
+    "doubao-2.0-mini": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 706,
+      "score": null,
+      "fastestLane": "TRAE 字节",
+      "note": "no AA data",
+      "estimated": true,
+      "laneCount": 1
+    },
+    "kimi-k2.7-code-highspeed": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 734,
+      "score": null,
+      "fastestLane": "LobsterAI 有道",
+      "note": "Kimi K2.7 Code HighSpeed 是 Kimi K2.7 Code 的高速版模型，与",
+      "estimated": true,
+      "laneCount": 1
+    },
+    "minimax-m3.1-flash-preview": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 758,
+      "score": null,
+      "fastestLane": "LobsterAI 有道",
+      "note": "no AA page",
+      "estimated": true,
+      "laneCount": 2
+    },
+    "qwen3.8-omni-flash": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 831,
+      "score": null,
+      "fastestLane": "LobsterAI 有道",
+      "note": "Qwen 新一代原生全模态模型，支持 1M 长序列，可直接输入文本、图像、音频与视频，基于 Qwen",
+      "estimated": true,
+      "laneCount": 1
+    },
+    "deepseek-flash": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 852,
+      "score": null,
+      "fastestLane": "LobsterAI 有道",
+      "note": "DeepSeek V4.1 Flash 采用了新的模型结构，原生多模态支持、能力更强、速度更快、且成",
+      "estimated": true,
+      "laneCount": 2
+    },
+    "multimodal_image_kimi-k2.5": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 877,
+      "score": null,
+      "fastestLane": "TRAE 字节",
+      "note": "",
+      "estimated": true,
+      "laneCount": 1
+    },
+    "kilo-auto": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 1011,
+      "score": null,
+      "fastestLane": "免费车道 (免密)",
+      "note": "text input · 250K context · thinking levels: low /",
+      "estimated": true,
+      "laneCount": 2
+    },
+    "deepseek-v4-flash-vision-exp": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 1086,
+      "score": null,
+      "fastestLane": "LobsterAI 有道",
+      "note": "支持图像识别，速度快、成本低，适合高频对话、简单 Agent 与规模化调用；分时计价：当前高峰时段",
+      "estimated": true,
+      "laneCount": 1
+    },
+    "doubao-seed-2.0-code": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 1180,
+      "score": null,
+      "fastestLane": "TRAE 字节",
+      "note": "existence unverified in AA",
+      "estimated": true,
+      "laneCount": 1
+    },
+    "kimi-k2.8-preview": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 1265,
+      "score": null,
+      "fastestLane": "Qoder 中国版 阿里",
+      "note": "positioned between K3 and K2.7 Code; no AA data",
+      "estimated": true,
+      "laneCount": 4
+    },
+    "doubao-seed-2.1-turbo": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 1332,
+      "score": null,
+      "fastestLane": "TRAE 字节",
+      "note": "no AA page",
+      "estimated": true,
+      "laneCount": 2
+    },
+    "space-bunny": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 1516,
+      "score": null,
+      "fastestLane": "CodeBuddy/WorkBuddy 腾讯",
+      "note": "STEALTH/anonymous; tool_choice=auto only",
+      "estimated": true,
+      "laneCount": 2
+    },
+    "mimo-v2.5": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 1542,
+      "score": null,
+      "fastestLane": "Loomy 讯飞",
+      "note": "exists; no AA entry",
+      "estimated": true,
+      "laneCount": 1
+    },
+    "nemotron-3-nano-omni-30b-a3b-reasoning": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 1654,
+      "score": null,
+      "fastestLane": "免费车道 (免密)",
+      "note": "AA '10' is flagged ESTIMATED and has no public API",
+      "estimated": true,
+      "laneCount": 1
+    },
+    "glm-5.3-flashx": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 1674,
+      "score": null,
+      "fastestLane": "TRAE 字节",
+      "note": "GLM-5.3-FlashX ，推理速度达 200 tokens/s，提供更快、更流畅的模型体验。C",
+      "estimated": true,
+      "laneCount": 2
+    },
+    "hunyuan-hy3": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 1732,
+      "score": null,
+      "fastestLane": "CodeBuddy/WorkBuddy 腾讯",
+      "note": "no AA entry",
+      "estimated": true,
+      "laneCount": 2
+    },
+    "kimi-k2.7": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 1805,
+      "score": null,
+      "fastestLane": "CodeBuddy/WorkBuddy 腾讯",
+      "note": "",
+      "estimated": true,
+      "laneCount": 1
+    },
+    "doubao-seed-2.1-pro": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 1853,
+      "score": null,
+      "fastestLane": "LobsterAI 有道",
+      "note": "no AA page",
+      "estimated": true,
+      "laneCount": 2
+    },
+    "auto-router": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 2100,
+      "score": null,
+      "fastestLane": "Qoder 中国版 阿里",
+      "note": "provider-side router; intelligence depends on what",
+      "estimated": true,
+      "laneCount": 2
+    },
+    "nemotron-3.5-content-safety": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 2215,
+      "score": null,
+      "fastestLane": "免费车道 (免密)",
+      "note": "NOT a general model - guardrail classifier; score",
+      "estimated": true,
+      "laneCount": 1
+    },
+    "qwen3.7-max": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 2372,
+      "score": null,
+      "fastestLane": "LobsterAI 有道",
+      "note": "no AA entry found",
+      "estimated": true,
+      "laneCount": 2
+    },
+    "qwen3.5-plus": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 2560,
+      "score": null,
+      "fastestLane": "LobsterAI 有道",
+      "note": "多模态能力强、速度与成本均衡，适合图文视频理解、长文档分析与高频办公场景。",
+      "estimated": true,
+      "laneCount": 1
+    },
+    "minimax-m2.7-highspeed": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 2695,
+      "score": null,
+      "fastestLane": "MiniMax",
+      "note": "",
+      "estimated": true,
+      "laneCount": 1
+    },
+    "sensenova-6.8-flash-lite": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 3089,
+      "score": null,
+      "fastestLane": "Raccoon 商汤",
+      "note": "no AA data",
+      "estimated": true,
+      "laneCount": 1
+    },
+    "doubao-seed-evolving": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 3119,
+      "score": null,
+      "fastestLane": "TRAE 字节",
+      "note": "NOT a distinct model - auto-routing alias to the n",
+      "estimated": true,
+      "laneCount": 1
+    },
+    "glyph-cluster": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 3447,
+      "score": null,
+      "fastestLane": "免费车道 (免密)",
+      "note": "STEALTH; NO structured outputs - bad for agent loo",
+      "estimated": true,
+      "laneCount": 1
+    },
+    "laguna-s-2.1": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 3483,
+      "score": null,
+      "fastestLane": "免费车道 (免密)",
+      "note": "vendor coding benchmarks only",
+      "estimated": true,
+      "laneCount": 1
+    },
+    "hunyuan-hy4-preview": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 3683,
+      "score": null,
+      "fastestLane": "CodeBuddy/WorkBuddy 腾讯",
+      "note": "Tencent self-reported ONLY: TB2.1 85.4, DeepSWE 64",
+      "estimated": true,
+      "laneCount": 1
+    },
+    "dots-3-note-preview": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 3910,
+      "score": null,
+      "fastestLane": "免费车道 (免密)",
+      "note": "vendor SWE-bench 78.4% (CODING-ONLY, different sca",
+      "estimated": true,
+      "laneCount": 1
+    },
+    "spark-x2.5": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 4370,
+      "score": null,
+      "fastestLane": "Loomy 讯飞",
+      "note": "iFlytek has NO AA creator page at all",
+      "estimated": true,
+      "laneCount": 1
+    },
+    "longcat-2.5": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 4718,
+      "score": null,
+      "fastestLane": "免费车道 (免密)",
+      "note": "text input · 128K context · tunable thinking budge",
+      "estimated": true,
+      "laneCount": 1
+    },
+    "doubao-seed-2-0-code-preview": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 9306,
+      "score": null,
+      "fastestLane": "LobsterAI 有道",
+      "note": "面向真实编程环境优化的 Coding 模型，擅长任务拆解、前端开发、多模态理解与 IDE/Agen",
+      "estimated": true,
+      "laneCount": 1
+    },
+    "laguna-xs-2.1": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 12000,
+      "score": null,
+      "fastestLane": "免费车道 (免密)",
+      "note": "vendor: SWE-bench Multilingual 63.1%",
+      "estimated": true,
+      "laneCount": 1
+    },
+    "qwen3.5": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 15700,
+      "score": null,
+      "fastestLane": "TRAE 字节",
+      "note": "",
+      "estimated": true,
+      "laneCount": 1
+    },
+    "sensenova-6.8-flash": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 16200,
+      "score": null,
+      "fastestLane": "Raccoon 商汤",
+      "note": "SenseTime has NO AA creator page; only Flash Lite",
+      "estimated": true,
+      "laneCount": 1
+    },
+    "qwen3.7-flash": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 20700,
+      "score": null,
+      "fastestLane": "Qoder 中国版 阿里",
+      "note": "",
+      "estimated": true,
+      "laneCount": 1
+    },
+    "glm-5.2-arkts-spark": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 38300,
+      "score": null,
+      "fastestLane": "CodeArts 华为云",
+      "note": "HarmonyOS-specific fine-tune of GLM-5.2",
+      "estimated": true,
+      "laneCount": 1
+    },
+    "openpangu-2.0-flash": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 44800,
+      "score": null,
+      "fastestLane": "CodeArts 华为云",
+      "note": "Huawei; no AA entry",
+      "estimated": true,
+      "laneCount": 1
+    },
+    "openpangu-2.0-pro": {
+      "intel": null,
+      "estimatedIntel": null,
+      "ttftMs": 87000,
+      "score": null,
+      "fastestLane": "CodeArts 华为云",
+      "note": "Huawei; no AA entry",
+      "estimated": true,
+      "laneCount": 1
+    }
+  },
+  "models": {
+    "step-5-preview": {
+      "id": "step-5-preview",
+      "family": "step-5-preview",
+      "intel": 44,
+      "ttftMs": 5777,
+      "outputTokens": 39,
+      "byLane": {
+        "CodeBuddy/WorkBuddy 腾讯": 5777,
+        "TRAE 字节": 1297
+      },
+      "lanes": [
+        "CodeBuddy/WorkBuddy 腾讯",
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "glm-5.3": {
+      "id": "glm-5.3",
+      "family": "glm-5.3",
+      "intel": 45,
+      "ttftMs": 2937,
+      "outputTokens": 3,
+      "byLane": {
+        "CodeBuddy/WorkBuddy 腾讯": 2937,
+        "LobsterAI 有道": 1559,
+        "TRAE 字节": 6244,
+        "ZCode 智谱": 7451
+      },
+      "lanes": [
+        "CodeBuddy/WorkBuddy 腾讯",
+        "LobsterAI 有道",
+        "TRAE 字节",
+        "ZCode 智谱"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "glm-5.3-flash": {
+      "id": "glm-5.3-flash",
+      "family": "glm-5.3-flash",
+      "intel": 42,
+      "ttftMs": 1501,
+      "outputTokens": 3,
+      "byLane": {
+        "CodeBuddy/WorkBuddy 腾讯": 1501,
+        "LobsterAI 有道": 1168,
+        "Loomy 讯飞": 1436,
+        "TRAE 字节": 2949,
+        "ZCode 智谱": 1486
+      },
+      "lanes": [
+        "CodeBuddy/WorkBuddy 腾讯",
+        "CodeArts 华为云",
+        "LobsterAI 有道",
+        "Loomy 讯飞",
+        "TRAE 字节",
+        "ZCode 智谱"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "kimi-k3-1": {
+      "id": "kimi-k3-1",
+      "family": "kimi-k3",
+      "intel": 44,
+      "ttftMs": 2709,
+      "outputTokens": 36,
+      "byLane": {
+        "CodeBuddy/WorkBuddy 腾讯": 2709
+      },
+      "lanes": [
+        "CodeBuddy/WorkBuddy 腾讯"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "deepseek-v4-flash": {
+      "id": "deepseek-v4-flash",
+      "family": "deepseek-v4-flash",
+      "intel": 34,
+      "ttftMs": 1403,
+      "outputTokens": 15,
+      "byLane": {
+        "CodeBuddy/WorkBuddy 腾讯": 1403,
+        "CodeArts 华为云": 64700,
+        "LobsterAI 有道": 1005,
+        "TRAE 字节": 1277
+      },
+      "lanes": [
+        "CodeBuddy/WorkBuddy 腾讯",
+        "CodeArts 华为云",
+        "LobsterAI 有道",
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "deepseek-v4.1-flash": {
+      "id": "deepseek-v4.1-flash",
+      "family": "deepseek-v4.1-flash",
+      "intel": 39,
+      "ttftMs": 1592,
+      "outputTokens": 18,
+      "byLane": {
+        "CodeBuddy/WorkBuddy 腾讯": 1592,
+        "CodeArts 华为云": 50400,
+        "Loomy 讯飞": 1930,
+        "TRAE 字节": 34100
+      },
+      "lanes": [
+        "CodeBuddy/WorkBuddy 腾讯",
+        "CodeArts 华为云",
+        "Loomy 讯飞",
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "deepseek-v4-pro": {
+      "id": "deepseek-v4-pro",
+      "family": "deepseek-v4-pro",
+      "intel": 36,
+      "ttftMs": 1737,
+      "outputTokens": 12,
+      "byLane": {
+        "CodeBuddy/WorkBuddy 腾讯": 1737,
+        "LobsterAI 有道": 1349,
+        "TRAE 字节": 1500
+      },
+      "lanes": [
+        "CodeBuddy/WorkBuddy 腾讯",
+        "CodeArts 华为云",
+        "DeepSeek 官方",
+        "LobsterAI 有道",
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "glm-5.2": {
+      "id": "glm-5.2",
+      "family": "glm-5.2",
+      "intel": 34,
+      "ttftMs": 1972,
+      "outputTokens": 14,
+      "byLane": {
+        "CodeBuddy/WorkBuddy 腾讯": 1972,
+        "CodeArts 华为云": 37500,
+        "LobsterAI 有道": 2088,
+        "TRAE 字节": 1677
+      },
+      "lanes": [
+        "CodeBuddy/WorkBuddy 腾讯",
+        "CodeArts 华为云",
+        "LobsterAI 有道",
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "minimax-m3": {
+      "id": "minimax-m3",
+      "family": "minimax-m3",
+      "intel": 29,
+      "ttftMs": 1461,
+      "outputTokens": 2,
+      "byLane": {
+        "CodeBuddy/WorkBuddy 腾讯": 1461,
+        "LobsterAI 有道": 1688,
+        "Loomy 讯飞": 703,
+        "MiniMax": 1561,
+        "TRAE 字节": 48800
+      },
+      "lanes": [
+        "CodeBuddy/WorkBuddy 腾讯",
+        "LobsterAI 有道",
+        "Loomy 讯飞",
+        "MiniMax",
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "kimi-k2.6": {
+      "id": "kimi-k2.6",
+      "family": "kimi-k2.6",
+      "intel": 27,
+      "ttftMs": 1414,
+      "outputTokens": 4,
+      "byLane": {
+        "CodeBuddy/WorkBuddy 腾讯": 1414,
+        "LobsterAI 有道": 2785,
+        "Loomy 讯飞": 647,
+        "TRAE 字节": 2808
+      },
+      "lanes": [
+        "CodeBuddy/WorkBuddy 腾讯",
+        "LobsterAI 有道",
+        "Loomy 讯飞",
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "glm-5.1": {
+      "id": "glm-5.1",
+      "family": "glm-5.1",
+      "intel": 26,
+      "ttftMs": 4117,
+      "outputTokens": 86,
+      "byLane": {
+        "CodeBuddy/WorkBuddy 腾讯": 4117,
+        "LobsterAI 有道": 6629,
+        "TRAE 字节": 6958
+      },
+      "lanes": [
+        "CodeBuddy/WorkBuddy 腾讯",
+        "LobsterAI 有道",
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "glm-5v-turbo": {
+      "id": "glm-5v-turbo",
+      "family": "glm-5v-turbo",
+      "intel": 23,
+      "ttftMs": 1379,
+      "outputTokens": 2,
+      "byLane": {
+        "CodeBuddy/WorkBuddy 腾讯": 1379,
+        "LobsterAI 有道": 1133,
+        "TRAE 字节": 964
+      },
+      "lanes": [
+        "CodeBuddy/WorkBuddy 腾讯",
+        "LobsterAI 有道",
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "kimi-k2.8-preview": {
+      "id": "kimi-k2.8-preview",
+      "family": "kimi-k2.8-preview",
+      "intel": null,
+      "ttftMs": 2442,
+      "outputTokens": 48,
+      "byLane": {
+        "CodeBuddy/WorkBuddy 腾讯": 2442,
+        "LobsterAI 有道": 3195,
+        "TRAE 字节": 1794
+      },
+      "lanes": [
+        "CodeBuddy/WorkBuddy 腾讯",
+        "LobsterAI 有道",
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "space-bunny": {
+      "id": "space-bunny",
+      "family": "space-bunny",
+      "intel": null,
+      "ttftMs": 1516,
+      "outputTokens": 3,
+      "byLane": {
+        "CodeBuddy/WorkBuddy 腾讯": 1516
+      },
+      "lanes": [
+        "CodeBuddy/WorkBuddy 腾讯"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "hy3-x": {
+      "id": "hy3-x",
+      "family": "hunyuan-hy3",
+      "intel": null,
+      "ttftMs": 1732,
+      "outputTokens": 55,
+      "byLane": {
+        "CodeBuddy/WorkBuddy 腾讯": 1732
+      },
+      "lanes": [
+        "CodeBuddy/WorkBuddy 腾讯"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "hy3": {
+      "id": "hy3",
+      "family": "hunyuan-hy3",
+      "intel": null,
+      "ttftMs": 1786,
+      "outputTokens": 34,
+      "byLane": {
+        "CodeBuddy/WorkBuddy 腾讯": 1786
+      },
+      "lanes": [
+        "CodeBuddy/WorkBuddy 腾讯"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "kimi-k2.7": {
+      "id": "kimi-k2.7",
+      "family": "kimi-k2.7",
+      "intel": null,
+      "ttftMs": 1805,
+      "outputTokens": 19,
+      "byLane": {
+        "CodeBuddy/WorkBuddy 腾讯": 1805
+      },
+      "lanes": [
+        "CodeBuddy/WorkBuddy 腾讯"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "hy4-preview": {
+      "id": "hy4-preview",
+      "family": "hunyuan-hy4-preview",
+      "intel": null,
+      "ttftMs": 3683,
+      "outputTokens": 72,
+      "byLane": {
+        "CodeBuddy/WorkBuddy 腾讯": 3683
+      },
+      "lanes": [
+        "CodeBuddy/WorkBuddy 腾讯"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "glm-5.2-sft-harmony": {
+      "id": "glm-5.2-sft-harmony",
+      "family": "glm-5.2",
+      "intel": null,
+      "ttftMs": 38300,
+      "outputTokens": 65,
+      "byLane": {
+        "CodeArts 华为云": 38300
+      },
+      "lanes": [
+        "CodeArts 华为云"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "openpangu-2.0-flash": {
+      "id": "openpangu-2.0-flash",
+      "family": "openpangu-2.0-flash",
+      "intel": null,
+      "ttftMs": 44800,
+      "outputTokens": 153,
+      "byLane": {
+        "CodeArts 华为云": 44800
+      },
+      "lanes": [
+        "CodeArts 华为云"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "openpangu-2.0-pro": {
+      "id": "openpangu-2.0-pro",
+      "family": "openpangu-2.0-pro",
+      "intel": null,
+      "ttftMs": 87000,
+      "outputTokens": 81,
+      "byLane": {
+        "CodeArts 华为云": 87000
+      },
+      "lanes": [
+        "CodeArts 华为云"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "deepseek-flash": {
+      "id": "deepseek-flash",
+      "family": "deepseek-v4.1-flash",
+      "intel": null,
+      "ttftMs": 852,
+      "outputTokens": 24,
+      "byLane": {
+        "LobsterAI 有道": 852
+      },
+      "lanes": [
+        "DeepSeek 官方",
+        "LobsterAI 有道"
+      ],
+      "ok": true,
+      "status": "❌ in-stream QUOTA: Insufficient Bala"
+    },
+    "qwen3.8-max": {
+      "id": "qwen3.8-max",
+      "family": "qwen3.8-max",
+      "intel": 45,
+      "ttftMs": 955,
+      "outputTokens": 21,
+      "byLane": {
+        "LobsterAI 有道": 955,
+        "TRAE 字节": 1349
+      },
+      "lanes": [
+        "LobsterAI 有道",
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "kimi-k3": {
+      "id": "kimi-k3",
+      "family": "kimi-k3",
+      "intel": 44,
+      "ttftMs": 2875,
+      "outputTokens": 75,
+      "byLane": {
+        "LobsterAI 有道": 2875,
+        "TRAE 字节": 1885
+      },
+      "lanes": [
+        "LobsterAI 有道",
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "kimi-k2.7-code": {
+      "id": "kimi-k2.7-code",
+      "family": "kimi-k2.7-code",
+      "intel": 26,
+      "ttftMs": 898,
+      "outputTokens": 26,
+      "byLane": {
+        "LobsterAI 有道": 898,
+        "TRAE 字节": 1172
+      },
+      "lanes": [
+        "LobsterAI 有道",
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "minimax-m2.7": {
+      "id": "MiniMax-M2.7",
+      "family": "minimax-m2.7",
+      "intel": 23,
+      "ttftMs": 2272,
+      "outputTokens": 65,
+      "byLane": {
+        "LobsterAI 有道": 2272,
+        "MiniMax": 3811,
+        "TRAE 字节": 3034
+      },
+      "lanes": [
+        "LobsterAI 有道",
+        "MiniMax",
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "qwen3.7-plus": {
+      "id": "qwen3.7-plus",
+      "family": "qwen3.7-plus",
+      "intel": 25,
+      "ttftMs": 3189,
+      "outputTokens": 153,
+      "byLane": {
+        "LobsterAI 有道": 3189
+      },
+      "lanes": [
+        "LobsterAI 有道"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "kimi-k2.5": {
+      "id": "kimi-k2.5",
+      "family": "kimi-k2.5",
+      "intel": 23,
+      "ttftMs": 392,
+      "outputTokens": 2,
+      "byLane": {
+        "LobsterAI 有道": 392,
+        "TRAE 字节": 889
+      },
+      "lanes": [
+        "LobsterAI 有道",
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "qwen3.8-flash": {
+      "id": "qwen3.8-flash",
+      "family": "qwen3.8-flash",
+      "intel": null,
+      "ttftMs": 1001,
+      "outputTokens": 29,
+      "byLane": {
+        "LobsterAI 有道": 1001,
+        "Loomy 讯飞": 2235,
+        "TRAE 字节": 1258
+      },
+      "lanes": [
+        "LobsterAI 有道",
+        "Loomy 讯飞",
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "kimi-k2.7-code-highspeed": {
+      "id": "kimi-k2.7-code-highspeed",
+      "family": "kimi-k2.7-code-highspeed",
+      "intel": null,
+      "ttftMs": 734,
+      "outputTokens": 20,
+      "byLane": {
+        "LobsterAI 有道": 734
+      },
+      "lanes": [
+        "LobsterAI 有道"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "minimax-m3.1-flash-preview": {
+      "id": "MiniMax-M3.1-Flash-Preview",
+      "family": "minimax-m3.1-flash-preview",
+      "intel": null,
+      "ttftMs": 758,
+      "outputTokens": 3,
+      "byLane": {
+        "LobsterAI 有道": 758,
+        "MiniMax": 1672
+      },
+      "lanes": [
+        "LobsterAI 有道",
+        "MiniMax"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "qwen3.8-omni-flash": {
+      "id": "qwen3.8-omni-flash",
+      "family": "qwen3.8-omni-flash",
+      "intel": null,
+      "ttftMs": 831,
+      "outputTokens": 28,
+      "byLane": {
+        "LobsterAI 有道": 831
+      },
+      "lanes": [
+        "LobsterAI 有道"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "deepseek-v4-flash-vision-exp": {
+      "id": "deepseek-v4-flash-vision-exp",
+      "family": "deepseek-v4-flash-vision-exp",
+      "intel": null,
+      "ttftMs": 1086,
+      "outputTokens": 15,
+      "byLane": {
+        "LobsterAI 有道": 1086
+      },
+      "lanes": [
+        "LobsterAI 有道"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "doubao-seed-2-1-turbo-260628": {
+      "id": "doubao-seed-2-1-turbo-260628",
+      "family": "doubao-seed-2.1-turbo",
+      "intel": null,
+      "ttftMs": 2903,
+      "outputTokens": 38,
+      "byLane": {
+        "LobsterAI 有道": 2903
+      },
+      "lanes": [
+        "LobsterAI 有道"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "glm-5.3-flashx": {
+      "id": "glm-5.3-flashx",
+      "family": "glm-5.3-flashx",
+      "intel": null,
+      "ttftMs": 1875,
+      "outputTokens": 86,
+      "byLane": {
+        "LobsterAI 有道": 1875,
+        "TRAE 字节": 1674
+      },
+      "lanes": [
+        "LobsterAI 有道",
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "doubao-seed-2-1-pro-260915": {
+      "id": "doubao-seed-2-1-pro-260915",
+      "family": "doubao-seed-2.1-pro",
+      "intel": null,
+      "ttftMs": 1853,
+      "outputTokens": 19,
+      "byLane": {
+        "LobsterAI 有道": 1853
+      },
+      "lanes": [
+        "LobsterAI 有道"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "glm-5": {
+      "id": "glm-5",
+      "family": "glm-5",
+      "intel": 28,
+      "ttftMs": 2185,
+      "outputTokens": 97,
+      "byLane": {
+        "LobsterAI 有道": 2185,
+        "TRAE 字节": 7905
+      },
+      "lanes": [
+        "LobsterAI 有道",
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "qwen3.7-max": {
+      "id": "qwen3.7-max",
+      "family": "qwen3.7-max",
+      "intel": null,
+      "ttftMs": 2372,
+      "outputTokens": 87,
+      "byLane": {
+        "LobsterAI 有道": 2372
+      },
+      "lanes": [
+        "LobsterAI 有道"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "qwen3.5-plus-2026-04-20": {
+      "id": "qwen3.5-plus-2026-04-20",
+      "family": "qwen3.5-plus",
+      "intel": null,
+      "ttftMs": 2560,
+      "outputTokens": 106,
+      "byLane": {
+        "LobsterAI 有道": 2560
+      },
+      "lanes": [
+        "LobsterAI 有道"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "qwen3.6-plus": {
+      "id": "qwen3.6-plus",
+      "family": "qwen3.6-plus",
+      "intel": 27,
+      "ttftMs": 2594,
+      "outputTokens": 116,
+      "byLane": {
+        "LobsterAI 有道": 2594
+      },
+      "lanes": [
+        "LobsterAI 有道"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "doubao-seed-2-0-code-preview-260215": {
+      "id": "doubao-seed-2-0-code-preview-260215",
+      "family": "doubao-seed-2-0-code-preview",
+      "intel": null,
+      "ttftMs": 9306,
+      "outputTokens": 31,
+      "byLane": {
+        "LobsterAI 有道": 9306
+      },
+      "lanes": [
+        "LobsterAI 有道"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "qwen-3.8-max": {
+      "id": "qwen-3.8-max",
+      "family": "qwen3.8-max",
+      "intel": 45,
+      "ttftMs": 2722,
+      "outputTokens": 23,
+      "byLane": {
+        "Loomy 讯飞": 2722
+      },
+      "lanes": [
+        "Loomy 讯飞"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "deepseek-v4-flash-0731": {
+      "id": "deepseek-v4-flash-0731",
+      "family": "deepseek-v4-flash",
+      "intel": 34,
+      "ttftMs": 1393,
+      "outputTokens": 24,
+      "byLane": {
+        "Loomy 讯飞": 1393
+      },
+      "lanes": [
+        "Loomy 讯飞"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "mimo-v2.5": {
+      "id": "mimo-v2.5",
+      "family": "mimo-v2.5",
+      "intel": null,
+      "ttftMs": 1542,
+      "outputTokens": 15,
+      "byLane": {
+        "Loomy 讯飞": 1542
+      },
+      "lanes": [
+        "Loomy 讯飞"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "auto": {
+      "id": "auto",
+      "family": "auto",
+      "intel": null,
+      "ttftMs": 2625,
+      "outputTokens": 25,
+      "byLane": {
+        "Loomy 讯飞": 2625,
+        "Qoder 中国版 阿里": 2100
+      },
+      "lanes": [
+        "Loomy 讯飞",
+        "Qoder 中国版 阿里"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "spark-x": {
+      "id": "spark-x",
+      "family": "spark-x2.5",
+      "intel": null,
+      "ttftMs": 4370,
+      "outputTokens": 127,
+      "byLane": {
+        "Loomy 讯飞": 4370
+      },
+      "lanes": [
+        "Loomy 讯飞"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "minimax-m2.7-highspeed": {
+      "id": "MiniMax-M2.7-highspeed",
+      "family": "minimax-m2.7-highspeed",
+      "intel": null,
+      "ttftMs": 2695,
+      "outputTokens": 97,
+      "byLane": {
+        "MiniMax": 2695
+      },
+      "lanes": [
+        "MiniMax"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "stepfun/step-5-preview-free": {
+      "id": "stepfun/step-5-preview-free",
+      "family": "step-5-preview",
+      "intel": 44,
+      "ttftMs": 828,
+      "outputTokens": 12,
+      "byLane": {
+        "免费车道 (免密)": 828
+      },
+      "lanes": [
+        "免费车道 (免密)"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "step-5-preview-free": {
+      "id": "step-5-preview-free",
+      "family": "step-5-preview",
+      "intel": 44,
+      "ttftMs": 2880,
+      "outputTokens": 3,
+      "byLane": {
+        "免费车道 (免密)": 2880
+      },
+      "lanes": [
+        "免费车道 (免密)"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "z-ai/glm-5.3": {
+      "id": "z-ai/glm-5.3",
+      "family": "glm-5.3",
+      "intel": 45,
+      "ttftMs": 42000,
+      "outputTokens": 3,
+      "byLane": {
+        "免费车道 (免密)": 42000
+      },
+      "lanes": [
+        "免费车道 (免密)"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "z-ai/glm-5.3-flash": {
+      "id": "z-ai/glm-5.3-flash",
+      "family": "glm-5.3-flash",
+      "intel": 42,
+      "ttftMs": 5885,
+      "outputTokens": 31,
+      "byLane": {
+        "免费车道 (免密)": 5885
+      },
+      "lanes": [
+        "免费车道 (免密)"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "moonshotai/kimi-k3": {
+      "id": "moonshotai/kimi-k3",
+      "family": "kimi-k3",
+      "intel": 44,
+      "ttftMs": 99700,
+      "outputTokens": 35,
+      "byLane": {
+        "免费车道 (免密)": 99700
+      },
+      "lanes": [
+        "免费车道 (免密)"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "inclusionai/ling-3.1-flash": {
+      "id": "inclusionai/ling-3.1-flash",
+      "family": "ling-3.1-flash",
+      "intel": 41,
+      "ttftMs": 1854,
+      "outputTokens": 20,
+      "byLane": {
+        "免费车道 (免密)": 1854
+      },
+      "lanes": [
+        "免费车道 (免密)"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "ling-3.1-flash-free": {
+      "id": "ling-3.1-flash-free",
+      "family": "ling-3.1-flash",
+      "intel": 41,
+      "ttftMs": 2350,
+      "outputTokens": 36,
+      "byLane": {
+        "免费车道 (免密)": 2350
+      },
+      "lanes": [
+        "免费车道 (免密)"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "deepseek-ai/deepseek-v4.1-flash": {
+      "id": "deepseek-ai/deepseek-v4.1-flash",
+      "family": "deepseek-v4.1-flash",
+      "intel": 39,
+      "ttftMs": null,
+      "outputTokens": null,
+      "byLane": {},
+      "lanes": [
+        "免费车道 (免密)"
+      ],
+      "ok": false,
+      "status": "❌ in-stream SERVER: upstream did not"
+    },
+    "moonshotai/kimi-k2.6": {
+      "id": "moonshotai/kimi-k2.6",
+      "family": "kimi-k2.6",
+      "intel": 27,
+      "ttftMs": null,
+      "outputTokens": null,
+      "byLane": {},
+      "lanes": [
+        "免费车道 (免密)"
+      ],
+      "ok": false,
+      "status": "❌ in-stream SERVER: Function '23d4f0"
+    },
+    "mimo-v2.6-flash-free": {
+      "id": "mimo-v2.6-flash-free",
+      "family": "mimo-v2.6-flash",
+      "intel": 38,
+      "ttftMs": 7498,
+      "outputTokens": 11,
+      "byLane": {
+        "免费车道 (免密)": 7498
+      },
+      "lanes": [
+        "免费车道 (免密)"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "nvidia/nemotron-3-ultra-550b-a55b:free": {
+      "id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "family": "nemotron-3-ultra-550b-a55b",
+      "intel": 23,
+      "ttftMs": 1139,
+      "outputTokens": 26,
+      "byLane": {
+        "免费车道 (免密)": 1139
+      },
+      "lanes": [
+        "免费车道 (免密)"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "nvidia/nemotron-3.5-lightning:free": {
+      "id": "nvidia/nemotron-3.5-lightning:free",
+      "family": "nemotron-3.5-lightning",
+      "intel": 13,
+      "ttftMs": 2019,
+      "outputTokens": 149,
+      "byLane": {
+        "免费车道 (免密)": 2019
+      },
+      "lanes": [
+        "免费车道 (免密)"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "nemotron-3.5-lightning-free": {
+      "id": "nemotron-3.5-lightning-free",
+      "family": "nemotron-3.5-lightning",
+      "intel": 13,
+      "ttftMs": 2737,
+      "outputTokens": 111,
+      "byLane": {
+        "免费车道 (免密)": 2737
+      },
+      "lanes": [
+        "免费车道 (免密)"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "cohere/north-mini-code:free": {
+      "id": "cohere/north-mini-code:free",
+      "family": "north-mini-code",
+      "intel": 10,
+      "ttftMs": 1861,
+      "outputTokens": 39,
+      "byLane": {
+        "免费车道 (免密)": 1861
+      },
+      "lanes": [
+        "免费车道 (免密)"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "nvidia/nemotron-3-super-120b-a12b:free": {
+      "id": "nvidia/nemotron-3-super-120b-a12b:free",
+      "family": "nemotron-3-super-120b-a12b",
+      "intel": 13,
+      "ttftMs": 7069,
+      "outputTokens": 204,
+      "byLane": {
+        "免费车道 (免密)": 7069
+      },
+      "lanes": [
+        "免费车道 (免密)"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "openai/gpt-oss-20b": {
+      "id": "openai/gpt-oss-20b",
+      "family": "gpt-oss-20b",
+      "intel": 9,
+      "ttftMs": 34000,
+      "outputTokens": 22,
+      "byLane": {
+        "免费车道 (免密)": 34000
+      },
+      "lanes": [
+        "免费车道 (免密)"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "kilo-auto/free": {
+      "id": "kilo-auto/free",
+      "family": "free",
+      "intel": null,
+      "ttftMs": 1011,
+      "outputTokens": 14,
+      "byLane": {
+        "免费车道 (免密)": 1011
+      },
+      "lanes": [
+        "免费车道 (免密)"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "openrouter/free": {
+      "id": "openrouter/free",
+      "family": "free",
+      "intel": null,
+      "ttftMs": 1859,
+      "outputTokens": 33,
+      "byLane": {
+        "免费车道 (免密)": 1859
+      },
+      "lanes": [
+        "免费车道 (免密)"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "space-bunny-free": {
+      "id": "space-bunny-free",
+      "family": "space-bunny",
+      "intel": null,
+      "ttftMs": 2859,
+      "outputTokens": 3,
+      "byLane": {
+        "免费车道 (免密)": 2859
+      },
+      "lanes": [
+        "免费车道 (免密)"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free": {
+      "id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+      "family": "nemotron-3-nano-omni-30b-a3b-reasoning",
+      "intel": null,
+      "ttftMs": 1654,
+      "outputTokens": 36,
+      "byLane": {
+        "免费车道 (免密)": 1654
+      },
+      "lanes": [
+        "免费车道 (免密)"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "nvidia/nemotron-3.5-content-safety:free": {
+      "id": "nvidia/nemotron-3.5-content-safety:free",
+      "family": "nemotron-3.5-content-safety",
+      "intel": null,
+      "ttftMs": 2215,
+      "outputTokens": 136,
+      "byLane": {
+        "免费车道 (免密)": 2215
+      },
+      "lanes": [
+        "免费车道 (免密)"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "liquid/lfm-2.5-2.6b:free": {
+      "id": "liquid/lfm-2.5-2.6b:free",
+      "family": "lfm-2.5-2.6b",
+      "intel": 8,
+      "ttftMs": 2223,
+      "outputTokens": 31,
+      "byLane": {
+        "免费车道 (免密)": 2223
+      },
+      "lanes": [
+        "免费车道 (免密)"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "stealth/glyph-cluster": {
+      "id": "stealth/glyph-cluster",
+      "family": "glyph-cluster",
+      "intel": null,
+      "ttftMs": 3447,
+      "outputTokens": 157,
+      "byLane": {
+        "免费车道 (免密)": 3447
+      },
+      "lanes": [
+        "免费车道 (免密)"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "poolside/laguna-s-2.1:free": {
+      "id": "poolside/laguna-s-2.1:free",
+      "family": "laguna-s-2.1",
+      "intel": null,
+      "ttftMs": 3483,
+      "outputTokens": 2,
+      "byLane": {
+        "免费车道 (免密)": 3483
+      },
+      "lanes": [
+        "免费车道 (免密)"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "dots-studio/dots-3-note-preview:free": {
+      "id": "dots-studio/dots-3-note-preview:free",
+      "family": "dots-3-note-preview",
+      "intel": null,
+      "ttftMs": 3910,
+      "outputTokens": 84,
+      "byLane": {
+        "免费车道 (免密)": 3910
+      },
+      "lanes": [
+        "免费车道 (免密)"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "longcat-2.5-preview-free": {
+      "id": "longcat-2.5-preview-free",
+      "family": "longcat-2.5",
+      "intel": null,
+      "ttftMs": 4718,
+      "outputTokens": 49,
+      "byLane": {
+        "免费车道 (免密)": 4718
+      },
+      "lanes": [
+        "免费车道 (免密)"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "poolside/laguna-xs-2.1:free": {
+      "id": "poolside/laguna-xs-2.1:free",
+      "family": "laguna-xs-2.1",
+      "intel": null,
+      "ttftMs": 12000,
+      "outputTokens": 68,
+      "byLane": {
+        "免费车道 (免密)": 12000
+      },
+      "lanes": [
+        "免费车道 (免密)"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "thinkingmachines/inkling-small:free": {
+      "id": "thinkingmachines/inkling-small:free",
+      "family": "inkling-small",
+      "intel": 26,
+      "ttftMs": null,
+      "outputTokens": null,
+      "byLane": {},
+      "lanes": [
+        "免费车道 (免密)"
+      ],
+      "ok": false,
+      "status": "❌ in-stream RATE_LIMIT: Rate limit e"
+    },
+    "muse-spark-1.2-contributor-free": {
+      "id": "muse-spark-1.2-contributor-free",
+      "family": "muse-spark-1.2",
+      "intel": 48,
+      "ttftMs": null,
+      "outputTokens": null,
+      "byLane": {},
+      "lanes": [
+        "免费车道-地区受限"
+      ],
+      "ok": false,
+      "status": "❌ in-stream REGION_BLOCKED: This mod"
+    },
+    "muse-spark-1.3-contributor-free": {
+      "id": "muse-spark-1.3-contributor-free",
+      "family": "muse-spark-1.3",
+      "intel": 48,
+      "ttftMs": null,
+      "outputTokens": null,
+      "byLane": {},
+      "lanes": [
+        "免费车道-地区受限"
+      ],
+      "ok": false,
+      "status": "❌ in-stream REGION_BLOCKED: This mod"
+    },
+    "qmodel_38max": {
+      "id": "qmodel_38max",
+      "family": "qwen3.8-max",
+      "intel": 45,
+      "ttftMs": 2041,
+      "outputTokens": 35,
+      "byLane": {
+        "Qoder 中国版 阿里": 2041
+      },
+      "lanes": [
+        "Qoder 中国版 阿里"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "gmodel": {
+      "id": "gmodel",
+      "family": "glm-5.3",
+      "intel": 45,
+      "ttftMs": 1042,
+      "outputTokens": 3,
+      "byLane": {
+        "Qoder 中国版 阿里": 1042
+      },
+      "lanes": [
+        "Qoder 中国版 阿里"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "gfmodel": {
+      "id": "gfmodel",
+      "family": "glm-5.3-flash",
+      "intel": 42,
+      "ttftMs": 995,
+      "outputTokens": 27,
+      "byLane": {
+        "Qoder 中国版 阿里": 995
+      },
+      "lanes": [
+        "Qoder 中国版 阿里"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "kmodel_latest": {
+      "id": "kmodel_latest",
+      "family": "kimi-k3",
+      "intel": 44,
+      "ttftMs": 2100,
+      "outputTokens": 45,
+      "byLane": {
+        "Qoder 中国版 阿里": 2100
+      },
+      "lanes": [
+        "Qoder 中国版 阿里"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "dfmodel": {
+      "id": "dfmodel",
+      "family": "deepseek-v4-flash",
+      "intel": 34,
+      "ttftMs": 571,
+      "outputTokens": 2,
+      "byLane": {
+        "Qoder 中国版 阿里": 571
+      },
+      "lanes": [
+        "Qoder 中国版 阿里"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "dmodel": {
+      "id": "dmodel",
+      "family": "deepseek-v4-pro",
+      "intel": 36,
+      "ttftMs": 1120,
+      "outputTokens": 12,
+      "byLane": {
+        "Qoder 中国版 阿里": 1120
+      },
+      "lanes": [
+        "Qoder 中国版 阿里"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "gm51model": {
+      "id": "gm51model",
+      "family": "glm-5.2",
+      "intel": 34,
+      "ttftMs": 1424,
+      "outputTokens": 68,
+      "byLane": {
+        "Qoder 中国版 阿里": 1424
+      },
+      "lanes": [
+        "Qoder 中国版 阿里"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "mmodel": {
+      "id": "mmodel",
+      "family": "minimax-m2.7",
+      "intel": 23,
+      "ttftMs": 1982,
+      "outputTokens": 99,
+      "byLane": {
+        "Qoder 中国版 阿里": 1982
+      },
+      "lanes": [
+        "Qoder 中国版 阿里"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "qmodel": {
+      "id": "qmodel",
+      "family": "qwen3.7-plus",
+      "intel": 25,
+      "ttftMs": 3520,
+      "outputTokens": 188,
+      "byLane": {
+        "Qoder 中国版 阿里": 3520
+      },
+      "lanes": [
+        "Qoder 中国版 阿里"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "qfmodel": {
+      "id": "qfmodel",
+      "family": "qwen3.8-flash",
+      "intel": null,
+      "ttftMs": 675,
+      "outputTokens": 23,
+      "byLane": {
+        "Qoder 中国版 阿里": 675
+      },
+      "lanes": [
+        "Qoder 中国版 阿里"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "kmodel": {
+      "id": "kmodel",
+      "family": "kimi-k2.8-preview",
+      "intel": null,
+      "ttftMs": 1265,
+      "outputTokens": 47,
+      "byLane": {
+        "Qoder 中国版 阿里": 1265
+      },
+      "lanes": [
+        "Qoder 中国版 阿里"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "qmodel_latest": {
+      "id": "qmodel_latest",
+      "family": "qwen3.7-max",
+      "intel": null,
+      "ttftMs": 2517,
+      "outputTokens": 131,
+      "byLane": {
+        "Qoder 中国版 阿里": 2517
+      },
+      "lanes": [
+        "Qoder 中国版 阿里"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "q37fmodel": {
+      "id": "q37fmodel",
+      "family": "qwen3.7-flash",
+      "intel": null,
+      "ttftMs": 20700,
+      "outputTokens": 201,
+      "byLane": {
+        "Qoder 中国版 阿里": 20700
+      },
+      "lanes": [
+        "Qoder 中国版 阿里"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "sn-glm-5-3": {
+      "id": "sn-glm-5-3",
+      "family": "glm-5.3",
+      "intel": 45,
+      "ttftMs": 1707,
+      "outputTokens": 57,
+      "byLane": {
+        "Raccoon 商汤": 1707
+      },
+      "lanes": [
+        "Raccoon 商汤"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "sn-glm-5-3-flash": {
+      "id": "sn-glm-5-3-flash",
+      "family": "glm-5.3-flash",
+      "intel": 42,
+      "ttftMs": 20000,
+      "outputTokens": 67,
+      "byLane": {
+        "Raccoon 商汤": 20000
+      },
+      "lanes": [
+        "Raccoon 商汤"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "sn-kimi-k3": {
+      "id": "sn-kimi-k3",
+      "family": "kimi-k3",
+      "intel": 44,
+      "ttftMs": 2196,
+      "outputTokens": 38,
+      "byLane": {
+        "Raccoon 商汤": 2196
+      },
+      "lanes": [
+        "Raccoon 商汤"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "sn-deepseek-v4-1-flash": {
+      "id": "sn-deepseek-v4-1-flash",
+      "family": "deepseek-v4.1-flash",
+      "intel": 39,
+      "ttftMs": 1364,
+      "outputTokens": 16,
+      "byLane": {
+        "Raccoon 商汤": 1364
+      },
+      "lanes": [
+        "Raccoon 商汤"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "sn-sensenova-6-8-flash-lite": {
+      "id": "sn-sensenova-6-8-flash-lite",
+      "family": "sn-sensenova-6-8-flash-lite",
+      "intel": null,
+      "ttftMs": 3089,
+      "outputTokens": 97,
+      "byLane": {
+        "Raccoon 商汤": 3089
+      },
+      "lanes": [
+        "Raccoon 商汤"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "sn-sensenova-6-8-flash": {
+      "id": "sn-sensenova-6-8-flash",
+      "family": "sn-sensenova-6-8-flash",
+      "intel": null,
+      "ttftMs": 16200,
+      "outputTokens": 886,
+      "byLane": {
+        "Raccoon 商汤": 16200
+      },
+      "lanes": [
+        "Raccoon 商汤"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "mimo-v2.6-pro": {
+      "id": "mimo-v2.6-pro",
+      "family": "mimo-v2.6-pro",
+      "intel": 46,
+      "ttftMs": 2913,
+      "outputTokens": 14,
+      "byLane": {
+        "TRAE 字节": 2913
+      },
+      "lanes": [
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "deepseek-v4-flash-official": {
+      "id": "DeepSeek-V4-Flash-Official",
+      "family": "deepseek-v4-flash",
+      "intel": 34,
+      "ttftMs": 1371,
+      "outputTokens": 8,
+      "byLane": {
+        "TRAE 字节": 1371
+      },
+      "lanes": [
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "deepseek-v4-pro-official": {
+      "id": "DeepSeek-V4-Pro-Official",
+      "family": "deepseek-v4-pro",
+      "intel": 36,
+      "ttftMs": 1707,
+      "outputTokens": 23,
+      "byLane": {
+        "TRAE 字节": 1707
+      },
+      "lanes": [
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "mimo-v2.6-flash": {
+      "id": "mimo-v2.6-flash",
+      "family": "mimo-v2.6-flash",
+      "intel": 38,
+      "ttftMs": 6134,
+      "outputTokens": 23,
+      "byLane": {
+        "TRAE 字节": 6134
+      },
+      "lanes": [
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "qwen-3.7-plus": {
+      "id": "qwen-3.7-plus",
+      "family": "qwen3.7-plus",
+      "intel": 25,
+      "ttftMs": 40600,
+      "outputTokens": 150,
+      "byLane": {
+        "TRAE 字节": 40600
+      },
+      "lanes": [
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "deepseek-v3": {
+      "id": "deepseek-V3",
+      "family": "deepseek-v3",
+      "intel": 8,
+      "ttftMs": 1333,
+      "outputTokens": 1,
+      "byLane": {
+        "TRAE 字节": 1333
+      },
+      "lanes": [
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "doubao-2.0-mini": {
+      "id": "doubao-2.0-mini",
+      "family": "doubao-2.0-mini",
+      "intel": null,
+      "ttftMs": 706,
+      "outputTokens": 1,
+      "byLane": {
+        "TRAE 字节": 706
+      },
+      "lanes": [
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "multimodal_image_kimi-k2.5": {
+      "id": "multimodal_image_kimi-k2.5",
+      "family": "multimodal_image_kimi-k2.5",
+      "intel": null,
+      "ttftMs": 877,
+      "outputTokens": 4,
+      "byLane": {
+        "TRAE 字节": 877
+      },
+      "lanes": [
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "doubao-seed-2.0-code": {
+      "id": "Doubao-Seed-2.0-Code",
+      "family": "doubao-seed-2.0-code",
+      "intel": null,
+      "ttftMs": 1180,
+      "outputTokens": 13,
+      "byLane": {
+        "TRAE 字节": 1180
+      },
+      "lanes": [
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "doubao-seed-2.1-turbo": {
+      "id": "Doubao-Seed-2.1-Turbo",
+      "family": "doubao-seed-2.1-turbo",
+      "intel": null,
+      "ttftMs": 1332,
+      "outputTokens": 25,
+      "byLane": {
+        "TRAE 字节": 1332
+      },
+      "lanes": [
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "deepseek-v3.1": {
+      "id": "deepseek-V3.1",
+      "family": "deepseek-v3.1",
+      "intel": 14,
+      "ttftMs": 1464,
+      "outputTokens": 1,
+      "byLane": {
+        "TRAE 字节": 1464
+      },
+      "lanes": [
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "code-review-judge": {
+      "id": "code-review-judge",
+      "family": "code-review-judge",
+      "intel": 14,
+      "ttftMs": 1681,
+      "outputTokens": 1,
+      "byLane": {
+        "TRAE 字节": 1681
+      },
+      "lanes": [
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "doubao-seed-2.1-pro": {
+      "id": "Doubao-Seed-2.1-Pro",
+      "family": "doubao-seed-2.1-pro",
+      "intel": null,
+      "ttftMs": null,
+      "outputTokens": null,
+      "byLane": {},
+      "lanes": [
+        "TRAE 字节"
+      ],
+      "ok": false,
+      "status": "❌ timeout>180000ms"
+    },
+    "qwen-3.6-plus": {
+      "id": "qwen-3.6-plus",
+      "family": "qwen3.6-plus",
+      "intel": 27,
+      "ttftMs": 4424,
+      "outputTokens": 184,
+      "byLane": {
+        "TRAE 字节": 4424
+      },
+      "lanes": [
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "doubao-seed-evolving": {
+      "id": "Doubao-Seed-Evolving",
+      "family": "doubao-seed-evolving",
+      "intel": null,
+      "ttftMs": 3119,
+      "outputTokens": 39,
+      "byLane": {
+        "TRAE 字节": 3119
+      },
+      "lanes": [
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "doubao-seed-code": {
+      "id": "Doubao-Seed-Code",
+      "family": "doubao-seed-code",
+      "intel": 17,
+      "ttftMs": 3588,
+      "outputTokens": 21,
+      "byLane": {
+        "TRAE 字节": 3588
+      },
+      "lanes": [
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "glm-4.7": {
+      "id": "glm-4.7",
+      "family": "glm-4.7",
+      "intel": 22,
+      "ttftMs": 6946,
+      "outputTokens": 101,
+      "byLane": {
+        "TRAE 字节": 6946
+      },
+      "lanes": [
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "qwen-3.5": {
+      "id": "qwen-3.5",
+      "family": "qwen3.5",
+      "intel": null,
+      "ttftMs": 15700,
+      "outputTokens": 127,
+      "byLane": {
+        "TRAE 字节": 15700
+      },
+      "lanes": [
+        "TRAE 字节"
+      ],
+      "ok": true,
+      "status": "ok"
+    }
+  },
+  "lanes": [
+    {
+      "name": "CodeBuddy/WorkBuddy 腾讯",
+      "meta": "17 个家族，17 个实测成功",
+      "families": [
+        "step-5-preview",
+        "glm-5.3",
+        "glm-5.3-flash",
+        "kimi-k3",
+        "deepseek-v4-flash",
+        "deepseek-v4.1-flash",
+        "deepseek-v4-pro",
+        "glm-5.2",
+        "minimax-m3",
+        "kimi-k2.6",
+        "glm-5.1",
+        "glm-5v-turbo",
+        "kimi-k2.8-preview",
+        "space-bunny",
+        "hunyuan-hy3",
+        "kimi-k2.7",
+        "hunyuan-hy4-preview"
+      ],
+      "modelCount": 18,
+      "okCount": 18
+    },
+    {
+      "name": "CodeArts 华为云",
+      "meta": "8 个家族，8 个实测成功",
+      "families": [
+        "glm-5.3-flash",
+        "deepseek-v4-flash",
+        "deepseek-v4.1-flash",
+        "deepseek-v4-pro",
+        "glm-5.2",
+        "openpangu-2.0-flash",
+        "openpangu-2.0-pro"
+      ],
+      "modelCount": 8,
+      "okCount": 6
+    },
+    {
+      "name": "DeepSeek 官方",
+      "meta": "2 个家族，2 个实测成功",
+      "families": [
+        "deepseek-v4-pro",
+        "deepseek-v4.1-flash"
+      ],
+      "modelCount": 2,
+      "okCount": 0
+    },
+    {
+      "name": "LobsterAI 有道",
+      "meta": "30 个家族，30 个实测成功",
+      "families": [
+        "qwen3.8-max",
+        "glm-5.3",
+        "glm-5.3-flash",
+        "kimi-k3",
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "glm-5.2",
+        "minimax-m3",
+        "kimi-k2.6",
+        "kimi-k2.7-code",
+        "minimax-m2.7",
+        "qwen3.7-plus",
+        "glm-5.1",
+        "kimi-k2.5",
+        "qwen3.8-flash",
+        "kimi-k2.7-code-highspeed",
+        "minimax-m3.1-flash-preview",
+        "qwen3.8-omni-flash",
+        "deepseek-v4.1-flash",
+        "glm-5v-turbo",
+        "deepseek-v4-flash-vision-exp",
+        "kimi-k2.8-preview",
+        "doubao-seed-2.1-turbo",
+        "glm-5.3-flashx",
+        "doubao-seed-2.1-pro",
+        "glm-5",
+        "qwen3.7-max",
+        "qwen3.5-plus",
+        "qwen3.6-plus",
+        "doubao-seed-2-0-code-preview"
+      ],
+      "modelCount": 30,
+      "okCount": 30
+    },
+    {
+      "name": "Loomy 讯飞",
+      "meta": "10 个家族，10 个实测成功",
+      "families": [
+        "qwen3.8-max",
+        "glm-5.3-flash",
+        "deepseek-v4-flash",
+        "deepseek-v4.1-flash",
+        "minimax-m3",
+        "kimi-k2.6",
+        "qwen3.8-flash",
+        "mimo-v2.5",
+        "auto",
+        "spark-x2.5"
+      ],
+      "modelCount": 10,
+      "okCount": 10
+    },
+    {
+      "name": "MiniMax",
+      "meta": "4 个家族，4 个实测成功",
+      "families": [
+        "minimax-m3",
+        "minimax-m2.7",
+        "minimax-m3.1-flash-preview",
+        "minimax-m2.7-highspeed"
+      ],
+      "modelCount": 4,
+      "okCount": 4
+    },
+    {
+      "name": "免费车道 (免密)",
+      "meta": "24 个家族，23 个实测成功",
+      "families": [
+        "step-5-preview",
+        "glm-5.3",
+        "glm-5.3-flash",
+        "kimi-k3",
+        "ling-3.1-flash",
+        "deepseek-v4.1-flash",
+        "kimi-k2.6",
+        "mimo-v2.6-flash",
+        "nemotron-3-ultra-550b-a55b",
+        "nemotron-3.5-lightning",
+        "north-mini-code",
+        "nemotron-3-super-120b-a12b",
+        "gpt-oss-20b",
+        "free",
+        "space-bunny",
+        "nemotron-3-nano-omni-30b-a3b-reasoning",
+        "nemotron-3.5-content-safety",
+        "lfm-2.5-2.6b",
+        "glyph-cluster",
+        "laguna-s-2.1",
+        "dots-3-note-preview",
+        "longcat-2.5",
+        "laguna-xs-2.1",
+        "inkling-small"
+      ],
+      "modelCount": 28,
+      "okCount": 25
+    },
+    {
+      "name": "免费车道-地区受限",
+      "meta": "2 个家族，0 个实测成功",
+      "families": [
+        "muse-spark-1.2",
+        "muse-spark-1.3"
+      ],
+      "modelCount": 2,
+      "okCount": 0
+    },
+    {
+      "name": "Qoder 中国版 阿里",
+      "meta": "14 个家族，14 个实测成功",
+      "families": [
+        "qwen3.8-max",
+        "glm-5.3",
+        "glm-5.3-flash",
+        "kimi-k3",
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "glm-5.2",
+        "minimax-m2.7",
+        "qwen3.7-plus",
+        "qwen3.8-flash",
+        "kimi-k2.8-preview",
+        "auto",
+        "qwen3.7-max",
+        "qwen3.7-flash"
+      ],
+      "modelCount": 14,
+      "okCount": 14
+    },
+    {
+      "name": "Raccoon 商汤",
+      "meta": "6 个家族，6 个实测成功",
+      "families": [
+        "glm-5.3",
+        "glm-5.3-flash",
+        "kimi-k3",
+        "deepseek-v4.1-flash",
+        "sn-sensenova-6-8-flash-lite",
+        "sn-sensenova-6-8-flash"
+      ],
+      "modelCount": 6,
+      "okCount": 6
+    },
+    {
+      "name": "TRAE 字节",
+      "meta": "36 个家族，36 个实测成功",
+      "families": [
+        "qwen3.8-max",
+        "step-5-preview",
+        "glm-5.3",
+        "glm-5.3-flash",
+        "kimi-k3",
+        "mimo-v2.6-pro",
+        "deepseek-v4-flash",
+        "deepseek-v4.1-flash",
+        "deepseek-v4-pro",
+        "glm-5.2",
+        "minimax-m3",
+        "kimi-k2.6",
+        "mimo-v2.6-flash",
+        "kimi-k2.7-code",
+        "minimax-m2.7",
+        "qwen3.7-plus",
+        "glm-5.1",
+        "deepseek-v3",
+        "kimi-k2.5",
+        "qwen3.8-flash",
+        "doubao-2.0-mini",
+        "multimodal_image_kimi-k2.5",
+        "glm-5v-turbo",
+        "doubao-seed-2.0-code",
+        "kimi-k2.8-preview",
+        "doubao-seed-2.1-turbo",
+        "deepseek-v3.1",
+        "glm-5.3-flashx",
+        "code-review-judge",
+        "doubao-seed-2.1-pro",
+        "glm-5",
+        "qwen3.6-plus",
+        "doubao-seed-evolving",
+        "doubao-seed-code",
+        "glm-4.7",
+        "qwen3.5"
+      ],
+      "modelCount": 38,
+      "okCount": 37
+    },
+    {
+      "name": "ZCode 智谱",
+      "meta": "2 个家族，2 个实测成功",
+      "families": [
+        "glm-5.3",
+        "glm-5.3-flash"
+      ],
+      "modelCount": 2,
+      "okCount": 2
+    }
+  ],
+  "unusable": [
+    {
+      "fullId": "our-free-model/thinkingmachines/inkling-small:free",
+      "lane": "免费车道 (免密)",
+      "reason": "in-stream RATE_LIMIT: Rate limit exceeded: limit_rpd/thinkingmachines/inkling-small-202607"
+    },
+    {
+      "fullId": "our-free-model-region/muse-spark-1.2-contributor-free",
+      "lane": "免费车道-地区受限",
+      "reason": "in-stream REGION_BLOCKED: This model is not available in your country"
+    },
+    {
+      "fullId": "our-free-model-region/muse-spark-1.3-contributor-free",
+      "lane": "免费车道-地区受限",
+      "reason": "in-stream REGION_BLOCKED: This model is not available in your country"
+    }
+  ]
+}

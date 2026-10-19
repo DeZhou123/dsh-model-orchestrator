@@ -1,0 +1,4 @@
+{
+  "title": "Model routing",
+  "description": "Picks and re-picks the model for you from the speed/intelligence report: live lane quota and health, automatic downgrade when a lane runs out of quota or starts rate-limiting, and a quality/token-cost tradeoff driven by task complexity."
+}
