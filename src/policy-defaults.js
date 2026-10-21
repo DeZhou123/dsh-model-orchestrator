@@ -248,6 +248,22 @@ export const DEFAULT_CONFIG = {
   /** Adopt a picker change as the new routing anchor. */
   adoptUserSelection: true,
   /**
+   * 首轮接管：新会话的第一条消息就按调度结果调用模型。
+   *
+   * 关掉它时，首轮会先跑模型选择器里的那个（"上次用过的"）模型，从第二步起才
+   * 由路由器纠正——用户看到的现象就是"自动调度开了，第一个回答却不是它选的"。
+   * 打开时首轮直接选最优模型，并把选择写进内核的 selection，选择器同步跟着变。
+   */
+  routeFirstTurn: true,
+  /**
+   * 自动选择：模型完全由调度决定，官方模型选择器只作为展示。
+   *
+   * 关掉时（默认），auto 模式会尊重选择器改动 `userChoiceTtlMs`；打开后选择器里的
+   * 模型与改选事件都不再是锚点，每一步都按当前策略（含偏好模式）重新选，路由结果
+   * 会写回选择器——用户看到的就是「选择器跟着调度走」。
+   */
+  autoSelect: false,
+  /**
    * auto     — the strategy decides (quality=max, balanced=default, economy/speed=min);
    * preserve — keep the session's effort where the target supports it;
    * <id>     — force one effort id wherever it is supported.

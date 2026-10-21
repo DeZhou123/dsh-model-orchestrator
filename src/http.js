@@ -94,6 +94,26 @@ export function installHttpApi(options) {
       },
     },
     {
+      path: `${PREFIX}/families`,
+      async handler(req, res) {
+        if (req.method !== 'GET' && req.method !== 'HEAD') {
+          res.writeHead(405, { Allow: 'GET, HEAD' })
+          res.end()
+          return
+        }
+        const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+        const sessionId = url.searchParams.get('sessionId') ?? ''
+        const query = url.searchParams.get('q') ?? ''
+        const value = api.families(sessionId === '' ? null : sessionId, query)
+        if (req.method === 'HEAD') {
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store, no-transform' })
+          res.end()
+          return
+        }
+        sendJson(res, 200, value)
+      },
+    },
+    {
       path: `${PREFIX}/config`,
       async handler(req, res) {
         if (req.method !== 'POST') {

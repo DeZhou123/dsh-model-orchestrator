@@ -45,7 +45,7 @@ export function registerAgentSurface(options) {
         'status —— 当前实际使用的模型、其渠道健康、按优先级排好的模型组与最近切换记录；',
         'explain —— 上一次为什么选了这个模型/渠道（含各项打分）；',
         'lanes —— 列出当前可用的模型组及其渠道覆盖（多模型多渠道对比）；',
-        'set —— 改调度设置（mode/strategy/preferModel/preferProvider/preferFallback/turnTokenBudget/deny/allow/denyProviders/reasoningEffort）；',
+        'set —— 改调度设置（mode/strategy/preferModel/preferProvider/preferFallback/turnTokenBudget/deny/allow/denyProviders/reasoningEffort/routeFirstTurn/autoSelect）；',
         'prefer —— 打开偏好模式：只调用指定模型，用尽时自动换渠道，所有渠道都不可用时暂停并提醒；',
         'unprefer —— 退出偏好模式，回到自动调度；',
         'refresh —— 重新拉取实时模型清单与渠道数据；',
@@ -68,6 +68,8 @@ export function registerAgentSurface(options) {
           preferProvider: { type: 'string', description: 'prefer：把偏好模型限制在某个渠道（空字符串表示所有渠道）。' },
           preferFallback: { type: 'string', enum: ['auto', 'manual', 'off'], description: 'set：偏好模型所有渠道都不可用时改用什么模式。' },
           reasoningEffort: { type: 'string', description: 'set：auto | preserve | 具体 effort id（max/high/...）。' },
+          routeFirstTurn: { type: 'boolean', description: 'set：新会话第一条消息是否直接按调度结果调用模型（true，默认）；false 时首轮先用选择器里的模型。' },
+          autoSelect: { type: 'boolean', description: 'set：自动选择——模型全部由调度决定，官方模型选择器只作展示（true）；false 时选择器的改动会被尊重一段时间。' },
           turnTokenBudget: { type: 'number', description: 'set：单轮输出 token 预算，超出后自动切到省 token 档；0 关闭。' },
           deny: { type: 'array', items: { type: 'string' }, description: 'set：永不动用的模型（id 或 provider/model）。' },
           allow: { type: 'array', items: { type: 'string' }, description: 'set：即使在内置黑名单里也允许动用。' },
@@ -96,7 +98,7 @@ export function registerAgentSurface(options) {
           case 'set': {
             const patch = {}
             for (const key of ['mode', 'strategy', 'preferModel', 'preferProvider', 'preferFallback',
-              'turnTokenBudget', 'deny', 'allow', 'denyProviders', 'reasoningEffort']) {
+              'turnTokenBudget', 'deny', 'allow', 'denyProviders', 'reasoningEffort', 'routeFirstTurn', 'autoSelect']) {
               if (args?.[key] !== undefined) patch[key] = args[key]
             }
             if (Object.keys(patch).length === 0) return { ok: false, error: 'set 需要至少一个要修改的字段' }
@@ -135,7 +137,7 @@ export function registerAgentSurface(options) {
   ctx.inject(['commands'], (scoped) => {
     const dispose = scoped.commands.register({
       name: 'route',
-      description: '查看/切换模型自动调度：/route [status|explain|lanes|auto|manual|off|prefer <模型>|unprefer|quality|balanced|economy|speed|reasoning <auto|preserve|effort>|refresh]',
+      description: '查看/切换模型自动调度：/route [status|explain|lanes|auto|manual|off|prefer <模型>|unprefer|quality|balanced|economy|speed|reasoning <auto|preserve|effort>|firstturn <on|off>|autoselect <on|off>|refresh]',
       handler: async (invocation) => {
         const input = String(invocation?.rawInput ?? '').trim()
         const [verbRaw, ...rest] = input.split(/\s+/).filter(Boolean)
@@ -187,6 +189,12 @@ export function registerAgentSurface(options) {
           case 'reasoning':
             value = { ok: true, config: api.applyConfig({ reasoningEffort: rest[0] ?? 'auto' }) }
             break
+          case 'firstturn':
+            value = { ok: true, config: api.applyConfig({ routeFirstTurn: (rest[0] ?? 'on').toLowerCase() !== 'off' }) }
+            break
+          case 'autoselect':
+            value = { ok: true, config: api.applyConfig({ autoSelect: (rest[0] ?? 'on').toLowerCase() !== 'off' }) }
+            break
           case 'pin':
             value = { ok: true, config: api.applyConfig(rest.length >= 2
               ? { mode: 'prefer', preferModel: rest[1], preferProvider: rest[0] }
@@ -205,20 +213,6 @@ export function registerAgentSurface(options) {
 /** Human-readable rendering for the `/route` command. */
 export function renderCommand(value) {
   if (value?.ok === false) return '调度命令失败：' + value.error
-  if (value?.config !== undefined) {
-    const config = value.config
-    const preference = config.mode === 'prefer'
-      ? ' 偏好=' + (config.preferModel || '—') + (config.preferProvider === '' ? '' : '@' + config.preferProvider)
-        + ' 备用=' + config.preferFallback
-      : ''
-    return '调度设置已更新：mode=' + config.mode + ' strategy=' + config.strategy + preference
-      + ' 单轮预算=' + (config.turnTokenBudget === 0 ? '关闭' : config.turnTokenBudget)
-      + ' effort=' + (config.reasoningEffort || 'auto')
-  }
-  if (value?.catalog !== undefined) {
-    return '清单已刷新：' + value.catalog.total + ' 个模型 / ' + value.catalog.providers + ' 条车道'
-      + ' / ' + (value.catalog.channelData ? '渠道数据可用' : '渠道数据不可用')
-  }
   if (value?.lastDecision !== undefined) {
     const decision = value.lastDecision
     if (decision === null) return '还没有路由决策记录。'
@@ -285,6 +279,30 @@ export function renderCommand(value) {
       lines.push('  ' + new Date(entry.at).toLocaleTimeString() + '  ' + (entry.from ?? '-') + ' → ' + (entry.to ?? '-') + '  ' + (entry.reason ?? ''))
     }
     return lines.join('\n')
+  }
+  // `status` carries a `catalog` summary as well as the route, so this branch has
+  // to come after the route one — otherwise `/route status` answered with the
+  // refresh line instead of the model.
+  if (value?.catalog !== undefined) {
+    return '清单已刷新：' + value.catalog.total + ' 个模型 / ' + value.catalog.providers + ' 条车道'
+      + ' / ' + (value.catalog.channelData ? '渠道数据可用' : '渠道数据不可用')
+  }
+
+  // A settings patch is the only reply that carries `config` together with no
+  // route data, so this branch goes last: `/route status` returns a config too,
+  // and matching on it first printed the settings line instead of the model the
+  // user asked about.
+  if (value?.config !== undefined) {
+    const config = value.config
+    const preference = config.mode === 'prefer'
+      ? ' 偏好=' + (config.preferModel || '—') + (config.preferProvider === '' ? '' : '@' + config.preferProvider)
+        + ' 备用=' + config.preferFallback
+      : ''
+    return '调度设置已更新：mode=' + config.mode + ' strategy=' + config.strategy + preference
+      + ' 单轮预算=' + (config.turnTokenBudget === 0 ? '关闭' : config.turnTokenBudget)
+      + ' effort=' + (config.reasoningEffort || 'auto')
+      + ' 首轮接管=' + (config.routeFirstTurn === false ? '关闭' : '开启')
+      + ' 自动选择=' + (config.autoSelect === true ? '开启' : '关闭')
   }
   return JSON.stringify(value, null, 2)
 }

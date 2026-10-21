@@ -213,7 +213,7 @@ function createSession(id, origin) {
 console.log('\n[1] plugin boot')
 apply(ctx, {})
 await new Promise(resolve => setTimeout(resolve, 20))
-checkThat('the model catalog was fetched', routes.size === 3, [...routes.keys()].join(','))
+checkThat('the panel routes were installed', routes.size === 4, [...routes.keys()].join(','))
 checkThat('the tool was registered', tools.has('model_orchestrator'))
 checkThat('the command was registered', commands.has('route'))
 const status0 = await tools.get('model_orchestrator').execute({ action: 'status' })
@@ -299,6 +299,12 @@ const explain = await tools.get('model_orchestrator').execute({ action: 'explain
 checkThat('explain returns the last decision', explain.lastDecision !== null && typeof explain.lastDecision.reason === 'string')
 const rendered = await commands.get('route').handler({ rawInput: 'lanes', agent })
 checkThat('the /route command renders text', rendered.kind === 'text' && rendered.text.includes('当前模型'), rendered.text.slice(0, 60))
+const statusText = await commands.get('route').handler({ rawInput: 'status', agent })
+checkThat('/route status shows the model instead of echoing the settings',
+  statusText.text.includes('当前模型'), statusText.text.slice(0, 40))
+const firstTurnOff = await commands.get('route').handler({ rawInput: 'firstturn off', agent })
+checkThat('/route firstturn off flips the setting', firstTurnOff.text.includes('首轮接管=关闭'), firstTurnOff.text.slice(0, 80))
+await commands.get('route').handler({ rawInput: 'firstturn on', agent })
 const config = await tools.get('model_orchestrator').execute({ action: 'set', mode: 'auto' })
 checkThat('set mode auto works', config.ok === true && config.config.mode === 'auto')
 
@@ -341,6 +347,165 @@ const parkedLane = groupLanes.find(lane => lane.provider === parked.provider && 
 checkThat('the parked lane reports its verdict',
   parkedLane !== undefined && parkedLane.available === false,
   JSON.stringify(parkedLane ?? groupLanes).slice(0, 200))
+
+console.log('\n[7] 首轮接管：第一条消息不用选择器里的模型')
+/** A per-session picker stand-in: `current` is what the kernel would dispatch. */
+function makeSelection(provider, model) {
+  return {
+    _picked: { provider, model },
+    get current() {
+      return this._picked
+    },
+    set current(next) {
+      this._picked = next
+    },
+    assembled: undefined,
+  }
+}
+/** Create a fresh agent whose picker shows `provider/model`, then assemble once. */
+async function firstAnswerOf(id, provider, model) {
+  const session = createSession(id, undefined)
+  const agent = { id, session }
+  const ref = makeSelection(provider, model)
+  sessions.set(id, { ref, session })
+  fire('agent/created', { agent })
+  await fire('system-prompt/assemble', { variables: {} }, { agent }, () => Promise.resolve({ variables: {} }))
+  return {
+    agent,
+    session,
+    ref,
+    picker: { provider, model },
+    route: { provider: ref._picked.provider, model: ref._picked.model },
+  }
+}
+// A clean auto-mode slate: the previous sections left a preference and a parked
+// model behind, and both would decide the outcome before the anchor does.
+await tools.get('model_orchestrator').execute({ action: 'set', mode: 'auto' })
+const pickerA = await firstAnswerOf('sA', 'buddy', 'step-5-preview')
+const pickerB = await firstAnswerOf('sB', 'trae', 'mimo-v2.6-pro')
+checkThat('the two sessions showed different picker models',
+  pickerA.picker.model !== pickerB.picker.model,
+  pickerA.picker.model + ' vs ' + pickerB.picker.model)
+check('the second session lands on the same first route',
+  [pickerB.route.provider, pickerB.route.model],
+  [pickerA.route.provider, pickerA.route.model])
+checkThat('the picker was rewritten to the routed model',
+  pickerA.session.snapshotEvents(0, pickerA.session.seq).some(event => event.type === 'model/selection'))
+await fire('system-prompt/assemble', { variables: {} }, { agent: pickerA.agent }, () => Promise.resolve({ variables: {} }))
+check('the next step does not bounce back to the picker model',
+  [pickerA.ref._picked.provider, pickerA.ref._picked.model],
+  [pickerA.route.provider, pickerA.route.model])
+
+// Control: with takeover off the picker regains authority on the first answer.
+await tools.get('model_orchestrator').execute({ action: 'set', routeFirstTurn: false })
+const controlA = await firstAnswerOf('sC', 'buddy', 'step-5-preview')
+const controlB = await firstAnswerOf('sD', 'trae', 'mimo-v2.6-pro')
+check('with takeover off the first answer keeps the picker model',
+  [controlA.route.provider, controlA.route.model], ['buddy', 'step-5-preview'])
+checkThat('with takeover off the two sessions diverge',
+  controlA.route.model !== controlB.route.model,
+  controlA.route.model + ' vs ' + controlB.route.model)
+await tools.get('model_orchestrator').execute({ action: 'set', routeFirstTurn: true })
+
+console.log('\n[8] 新会话面板能预告下一条消息用哪个模型')
+{
+  const summary = routes.get('/api/model-orchestrator/summary')
+  const captured = { code: 0, body: null }
+  const req = { method: 'GET', url: '/api/model-orchestrator/summary?sessionId=no-such-session' }
+  const res = {
+    writeHead(code) {
+      captured.code = code
+    },
+    end(body) {
+      captured.body = JSON.parse(body)
+    },
+  }
+  await summary.handler(req, res)
+  check('an unknown session still gets a summary', captured.code, 200)
+  checkThat('the summary previews the next route',
+    captured.body.next !== null && typeof captured.body.next.family === 'string',
+    JSON.stringify(captured.body.next))
+  checkThat('the preview names a dispatchable lane',
+    typeof captured.body.next.provider === 'string' && captured.body.next.provider !== '')
+  check('the preview follows the live strategy', captured.body.next.mode, 'auto')
+}
+
+console.log('\n[9] 自动选择：接管模型，选具体模型时让位')
+{
+  await tools.get('model_orchestrator').execute({ action: 'set', mode: 'auto' })
+  const autoA = await firstAnswerOf('sE', 'buddy', 'step-5-preview')
+  const autoB = await firstAnswerOf('sF', 'trae', 'mimo-v2.6-pro')
+  check('both sessions take the same routed first answer',
+    [autoB.route.provider, autoB.route.model],
+    [autoA.route.provider, autoA.route.model])
+
+  const routed = [autoA.ref._picked.provider, autoA.ref._picked.model]
+  // A real dispatch leaves a request header behind; the fixture has to as well,
+  // otherwise the session still looks brand-new to the first-turn takeover.
+  autoA.session.setHeader({ provider: routed[0], model: routed[1] })
+  // A picker model that is NOT the routed one: whichever of the two the router
+  // chose, pick the other so the assertion can actually fail.
+  const other = routed[1] === 'step-5-preview'
+    ? { provider: 'trae', model: 'mimo-v2.6-pro' }
+    : { provider: 'buddy', model: 'step-5-preview' }
+
+  await tools.get('model_orchestrator').execute({ action: 'set', mode: 'manual' })
+  const manualThenAuto = await tools.get('model_orchestrator').execute({ action: 'set', autoSelect: true })
+  check('auto-select clears a conflicting manual mode', manualThenAuto.config.mode, 'auto')
+  const status = await tools.get('model_orchestrator').execute({ action: 'status' })
+  checkThat('auto-select is reported in the config', status.config.autoSelect === true)
+  // Nothing picked: the route stays where the router put it, step after step.
+  await fire('system-prompt/assemble', { variables: {} }, { agent: autoA.agent }, () => Promise.resolve({ variables: {} }))
+  check('the route holds while nothing is picked',
+    [autoA.ref._picked.provider, autoA.ref._picked.model], routed)
+
+  // Picking a concrete model in the official list is an instruction: it wins, and
+  // the takeover steps aside (that is what the list's first row exists to undo).
+  autoA.session.append('model/selection', other)
+  const afterPick = await tools.get('model_orchestrator').execute({ action: 'status' })
+  checkThat('picking a model in the official list leaves auto-select',
+    afterPick.config.autoSelect === false, String(afterPick.config.autoSelect))
+  await fire('system-prompt/assemble', { variables: {} }, { agent: autoA.agent }, () => Promise.resolve({ variables: {} }))
+  check('the picked model is honoured',
+    [autoA.ref._picked.provider, autoA.ref._picked.model], [other.provider, other.model])
+
+  // The row in the list turns it back on; the picker stops deciding again.
+  await tools.get('model_orchestrator').execute({ action: 'set', autoSelect: true })
+  const backOn = await tools.get('model_orchestrator').execute({ action: 'status' })
+  checkThat('turning it back on keeps the takeover', backOn.config.autoSelect === true)
+  await fire('system-prompt/assemble', { variables: {} }, { agent: autoA.agent }, () => Promise.resolve({ variables: {} }))
+  checkThat('the router is back in charge',
+    [autoA.ref._picked.provider, autoA.ref._picked.model].join('/') !== [other.provider, other.model].join('/'),
+    autoA.ref._picked.provider + '/' + autoA.ref._picked.model)
+  await tools.get('model_orchestrator').execute({ action: 'set', autoSelect: false })
+}
+
+console.log('\n[10] 全部模型清单接口（偏好选择器用）')
+{
+  const route = routes.get('/api/model-orchestrator/families')
+  const read = async (query) => {
+    const captured = { code: 0, body: null }
+    await route.handler({ method: 'GET', url: '/api/model-orchestrator/families' + query }, {
+      writeHead(code) {
+        captured.code = code
+      },
+      end(body) {
+        captured.body = JSON.parse(body)
+      },
+    })
+    return captured
+  }
+  const all = await read('')
+  check('the families route answers', all.code, 200)
+  checkThat('it lists every model group', all.body.total >= 3 && all.body.count === all.body.total, String(all.body.total))
+  checkThat('groups carry the facts a picker shows',
+    all.body.groups.every(group => typeof group.vision === 'boolean' && 'contextWindow' in group))
+  const filtered = await read('?q=mimo')
+  checkThat('the q filter narrows the list',
+    filtered.body.count < all.body.count && filtered.body.groups.every(group => (String(group.family) + ' ' + String(group.key)).toLowerCase().includes('mimo')),
+    String(filtered.body.count))
+  check('the configured preference is reported', typeof all.body.configured, 'string')
+}
 
 console.log('\n' + (failures === 0 ? 'PASS' : 'FAIL') + ' — ' + (checks - failures) + '/' + checks)
 if (failures > 0) process.exitCode = 1

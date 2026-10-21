@@ -1,6 +1,6 @@
 {
   "name": "dsh-model-orchestrator",
-  "version": "2.0.0",
+  "version": "2.3.0",
   "type": "module",
   "description": "两级模型调度：先在模型层选最优模型，再在渠道层选该模型的最佳渠道；失败先换渠道再换模型，并有偏好模式（锁定一个模型，用尽所有渠道后才降级并提醒）。实时显示额度/健康/用量。",
   "main": "./index.js",
@@ -23,7 +23,7 @@
   ],
   "scripts": {
     "build:data": "node tools/build-data.mjs",
-    "check": "node --check index.js && node --check client.js && node tools/smoke.mjs && node tools/integration.mjs",
+    "check": "node --check index.js && node --check client.js && node tools/smoke.mjs && node tools/integration.mjs && node tools/client-smoke.mjs",
     "smoke": "node tools/smoke.mjs"
   },
   "keywords": [

@@ -721,6 +721,14 @@ function laneAlternatives(group, chosen) {
 }
 
 function summarizeGroup(group) {
+  // `vision` / `contextWindow` are the two facts a preference picker has to show:
+  // locking a text-only or small-window model is a decision the user can only make
+  // if the list says so up front.
+  const vision = group.all.some(entry => entry.row.vision === true)
+  let contextWindow = 0
+  for (const entry of group.all) {
+    if (Number.isFinite(entry.row.contextWindow)) contextWindow = Math.max(contextWindow, entry.row.contextWindow)
+  }
   return {
     key: group.key,
     family: group.family,
@@ -732,6 +740,8 @@ function summarizeGroup(group) {
     total: group.all.length,
     bestProvider: group.best?.row?.provider ?? null,
     bestModel: group.best?.row?.model ?? null,
+    vision,
+    contextWindow: contextWindow > 0 ? contextWindow : null,
     tags: group.tags,
   }
 }

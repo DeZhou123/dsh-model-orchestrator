@@ -224,6 +224,9 @@ export function apply(ctx, rawConfig = {}) {
       persisted.pinModel = ''
       persisted.pinProvider = ''
     }
+    // `manual` 的全部含义是「跟随选择器」，和自动选择直接冲突；打开自动选择时把它落到
+    // auto，免得面板高亮着「手动」而实际按策略调度。
+    if (requested.autoSelect === true && persisted.mode === 'manual') persisted.mode = 'auto'
     writeOverrides(persisted)
     runtime.config = resolveConfig(runtime.patch, persisted)
     // A settings change is an explicit instruction: forget per-session
@@ -240,8 +243,25 @@ export function apply(ctx, rawConfig = {}) {
       state.userEffort = undefined
     }
     if (requested.mode !== undefined || requested.strategy !== undefined
-      || requested.reasoningEffort !== undefined || requested.preferModel !== undefined) {
+      || requested.reasoningEffort !== undefined || requested.preferModel !== undefined
+      || requested.autoSelect !== undefined) {
       for (const state of sessions.values()) state.applied = null
+    }
+    // 自动选择开关：选择器必须立刻不再是锚点，而且座位上的模型应该马上变成路由
+    // 结果——等下一次回答才生效会让人以为「开关没反应」。
+    if (requested.autoSelect !== undefined) {
+      for (const state of sessions.values()) {
+        state.external = null
+        state.applied = null
+        state.appliedAnchor = null
+        if (requested.autoSelect !== true) continue
+        try {
+          const decision = selectRoute(selectionInput(state))
+          if (decision !== null && decision.blocked !== true) applyRoute(state, decision, 'auto-select')
+        } catch {
+          /* 还没准备好路由的会话保留上一次的路由 */
+        }
+      }
     }
     return publicConfig()
   }
@@ -353,6 +373,10 @@ export function apply(ctx, rawConfig = {}) {
       preferenceSuspended: false,
       userEffort: undefined,
       lastPreferenceNotifyAt: 0,
+      // Set the moment a request actually leaves the process. `applied` is cleared
+      // by a settings change, so "has this session ever called a model" cannot be
+      // inferred from it — and the first-turn takeover must not re-run later.
+      started: false,
     }
   }
 
@@ -478,9 +502,40 @@ export function apply(ctx, rawConfig = {}) {
     // Manual mode means "keep the model I chose": the anchor survives a rescue
     // to a different model, so the router returns to the user's choice as soon
     // as that model has a usable channel again.
-    if (config.mode === 'manual' && state.manualAnchor !== null) return state.manualAnchor
+    if (effectiveMode(state) === 'manual' && state.manualAnchor !== null) return state.manualAnchor
     const header = headerRoute(state)
     state.headerAnchor = header === null ? null : withKey(header)
+
+    // ── 自动选择 ────────────────────────────────────────────────────────────
+    // The picker is a display, not an instruction: no `userChoice`, no header
+    // anchor (it may be a model the user picked in an earlier, non-takeover
+    // session). Only the route this plugin itself applied survives, so an
+    // ongoing turn keeps its model and a resumed session re-picks by strategy.
+    if (config.autoSelect === true) {
+      state.external = null
+      return state.appliedAnchor
+    }
+
+    // ── 首轮接管 ────────────────────────────────────────────────────────────
+    // A brand-new session has no header and no route of its own yet, so the only
+    // thing in effect is whatever the model picker happens to show — and that
+    // value is merely the model used last time, not an instruction about THIS
+    // turn. Anchoring on it (as a userChoice) makes the router hold the
+    // picker's model for the first answer and only correct itself on the second
+    // step, which reads as auto routing being on while the first answer ignored it.
+    // In auto mode the first assembly therefore starts with no anchor at all:
+    // selectRoute ranks every group and the picked route is written back into
+    // the kernel selection, so the picker follows the router instead of the
+    // other way round. routeFirstTurn:false restores the old behaviour, and
+    // manual/prefer modes keep their own meaning of the user chose this.
+    if (config.mode === 'auto' && config.routeFirstTurn !== false
+      && state.started !== true && state.applied === null && state.headerAnchor === null) {
+      // A selection event raised while the session was being created is part of
+      // the same default, so it is dropped here too; keeping it would make the
+      // very next step anchor straight back to it.
+      state.external = null
+      return null
+    }
 
     if (state.external !== null) {
       const fresh = now - state.external.at <= Number(config.userChoiceTtlMs ?? 0)
@@ -513,7 +568,9 @@ export function apply(ctx, rawConfig = {}) {
   /** The mode the router should actually run this step. */
   function effectiveMode(state) {
     const config = runtime.config
-    if (config.mode !== 'prefer') return config.mode
+    // 自动选择 = 选择器不再是指令。`manual` 的全部含义就是「跟随选择器」，所以它
+    // 在这个开关下让位给 auto；`off` 仍然是显式的「不介入」。
+    if (config.mode !== 'prefer') return config.autoSelect === true && config.mode === 'manual' ? 'auto' : config.mode
     if (state?.preferenceSuspended === true && config.preferAutoResume !== true) {
       return config.preferFallback
     }
@@ -721,7 +778,8 @@ export function apply(ctx, rawConfig = {}) {
   /** Compute and install the route for the step that is about to assemble. */
   function routeForStep(state, assembly) {
     const config = runtime.config
-    if (config.mode === 'off') return null
+    const mode = effectiveMode(state)
+    if (mode === 'off') return null
     // The live assembly is the most reliable "this step can call tools" signal:
     // a brand-new session has no request header and no tool events yet, so
     // waiting for them would let a tool-weak model serve the first step of an
@@ -730,7 +788,7 @@ export function apply(ctx, rawConfig = {}) {
     scanSession(state)
     if (state.ref === null) state.ref = selectionFor(state.agent)
 
-    if (config.mode === 'manual') {
+    if (mode === 'manual') {
       if (state.external !== null && state.external.fromEvent === true) {
         state.manualAnchor = withKey(state.external, true)
       } else if (state.manualAnchor === null) {
@@ -751,7 +809,7 @@ export function apply(ctx, rawConfig = {}) {
       // mistaking its OWN strategy-chosen effort for a user instruction.
       state.userEffort = live.reasoningEffort
     }
-    if (live !== null && state.external === null && state.applied !== null
+    if (live !== null && config.autoSelect !== true && state.external === null && state.applied !== null
       && !sameModel(live, state.applied)) {
       const row = catalog.row(live.provider, live.model)
       // Only treat it as external when it really differs from what we applied.
@@ -797,7 +855,15 @@ export function apply(ctx, rawConfig = {}) {
       && Date.now() - state.external.at > Number(config.userChoiceTtlMs ?? 0)) {
       state.external = null
     }
-    return applyRoute(state, decision, 'step')
+    // The first route of a session earns its own kind in the decision log, but only
+    // when the takeover really ran: a session whose `applied` was cleared by a
+    // settings change is not a first turn, and the picker it just honoured must
+    // not be described as ignored.
+    const takeover = state.started !== true && state.applied === null
+      && state.headerAnchor === null && state.external === null
+      && config.mode === 'auto' && config.routeFirstTurn !== false
+    if (takeover) decision.reason = '首轮接管（不用选择器里的默认模型）：' + decision.reason
+    return applyRoute(state, decision, takeover ? 'first-turn' : 'step')
   }
 
   // ── failure recovery ──────────────────────────────────────────────────────
@@ -964,6 +1030,31 @@ export function apply(ctx, rawConfig = {}) {
       // too, and treating their strategy-chosen effort as a user choice would
       // freeze the effort for the rest of the session.
       if (typeof selection.reasoningEffort === 'string') state.userEffort = selection.reasoningEffort
+      // 自动选择：模型不由选择器决定，但「推理档」是另一回事——用户在选择器里调档
+      // 仍然算一条明确指令，所以只在模型层把它丢掉。
+      if (runtime.config.autoSelect === true) {
+        // 自动选择期间模型不由选择器决定……但「在官方模型列表里点了一个具体模型」是一条
+        // 明确的指令：那等于说「我不要接管，我要这个」。所以这里退出自动选择并采纳这次选择。
+        // 列表首行是「自动选择」，点它就是重新接管——和单选按钮的语义一致。
+        if (state.applied === null) {
+          state.external = null
+          return
+        }
+        try {
+          applyConfig({ autoSelect: false })
+          state.external = { ...selection, at: Date.now(), fromEvent: true }
+          health.logDecision({
+            kind: 'auto-select-off',
+            from: routeLabel(state.applied),
+            to: routeLabel(selection),
+            reason: '在官方模型列表里选定了模型，已退出自动选择',
+            sessionId: state.agent.id,
+          }, runtime.config.decisionLogSize)
+        } catch {
+          /* 选择器事件永远不该把会话弄坏 */
+        }
+        return
+      }
       state.external = { ...selection, at: Date.now(), fromEvent: true }
     }
   })
@@ -988,6 +1079,10 @@ export function apply(ctx, rawConfig = {}) {
   // listener, so even if the assembly write raced another assembly, the call
   // that leaves this process is the route the router chose.
   ctx.on('agent/request', async ({ agent }, next) => {
+    // Recorded before the await: the flag means "this session has dispatched", and
+    // it must survive a settings change that clears `applied`.
+    const started = sessions.get(agent.id)
+    if (started !== undefined) started.started = true
     const resolved = await next()
     const state = sessions.get(agent.id)
     if (state === undefined || state.applied === null) return resolved
@@ -1145,6 +1240,44 @@ export function apply(ctx, rawConfig = {}) {
     return { config, current, groups, lanes, key }
   }
 
+  /**
+   * The route the next assembly would install, without touching a session.
+   *
+   * A session that has not sent anything yet has no `current` route at all, and
+   * "which model will answer this first message" is the only question the panel
+   * can usefully answer there. After the first-turn takeover that preview is the
+   * exact route the first message will use.
+   */
+  function nextRouteOf(view, preference) {
+    const config = view.config
+    if (config.mode === 'off' || config.mode === 'manual') return null
+    if (config.mode === 'prefer' && preference.group !== null && preference.group.available > 0) {
+      const lane = preference.group.lanes.find(entry => entry.available === true) ?? null
+      return {
+        mode: 'prefer',
+        key: preference.group.key,
+        family: preference.group.family,
+        provider: lane === null ? null : lane.provider,
+        model: lane === null ? null : lane.model,
+        lanes: preference.group.available,
+        total: preference.group.total,
+        utility: null,
+      }
+    }
+    const top = view.groups[0]
+    if (top === undefined) return null
+    return {
+      mode: config.mode,
+      key: top.key,
+      family: top.family,
+      provider: top.bestProvider,
+      model: top.bestModel,
+      lanes: top.lanes,
+      total: top.total,
+      utility: top.utility,
+    }
+  }
+
   const api = {
     refresh: async () => {
       const current = await refreshCatalog('api')
@@ -1258,6 +1391,7 @@ export function apply(ctx, rawConfig = {}) {
         config: view.config,
         effectiveMode: effectiveMode(state ?? null),
         current: view.current,
+        next: nextRouteOf(view, preference),
         preference,
         groups: view.groups.slice(0, 30),
         lanes: view.lanes,
@@ -1291,6 +1425,41 @@ export function apply(ctx, rawConfig = {}) {
           packDir: channelData.packDir,
           freeDir: channelData.freeDir,
         },
+      }
+    },
+
+    /**
+     * Every model group with the facts needed to pick one, optionally filtered.
+     *
+     * The settings dropdown used to be fed from `summary.groups`, which is capped
+     * at 30 rows for the panel — a machine with more families simply could not be
+     * locked onto the rest. This is the uncapped list, fetched on demand instead
+     * of riding along with the 10 s poll, with a server-side `q` filter for the
+     * case where the client would rather narrow than filter locally.
+     */
+    families: (sessionId, query) => {
+      const state = sessionState(sessionId ?? undefined)
+      const view = viewFor(state)
+      const config = view.config
+      const needle = String(query ?? '').trim().toLowerCase()
+      const all = view.groups
+      const rows = needle === ''
+        ? all
+        : all.filter((group) => {
+          const haystack = [group.family, group.key, group.bestProvider, group.bestModel, ...(group.tags ?? [])]
+            .filter(value => typeof value === 'string')
+            .join(' ')
+            .toLowerCase()
+          return haystack.includes(needle)
+        })
+      return {
+        ok: true,
+        total: all.length,
+        count: rows.length,
+        configured: config.preferModel,
+        configuredProvider: config.preferProvider,
+        current: view.current === null ? null : (view.current.key ?? view.current.model),
+        groups: rows,
       }
     },
   }

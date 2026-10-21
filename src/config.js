@@ -25,7 +25,7 @@ export const MUTABLE_KEYS = [
   'requestRepeatThreshold', 'requestRepeatWindowMs', 'requestRepeatBlockMs',
   'turnTokenBudget', 'longContextThreshold', 'latencyGateMs', 'cacheSwitchPenalty',
   'cacheAffinityTokens', 'anchorBonus', 'switchMargin', 'laneSwitchMargin', 'userChoiceTtlMs',
-  'routeSubagents', 'adoptUserSelection', 'reasoningEffort', 'catalogRefreshMs',
+  'routeSubagents', 'adoptUserSelection', 'routeFirstTurn', 'autoSelect', 'reasoningEffort', 'catalogRefreshMs',
   'channelDataRefreshMs', 'modelInfoTtlMs', 'catalogTimeoutMs', 'usageUnitTokens',
   'channelData', 'freeModelData',
 ]
@@ -99,6 +99,8 @@ export function resolveConfig(raw, overrides) {
     userChoiceTtlMs: Math.max(0, pick(merged, DEFAULT_CONFIG, 'userChoiceTtlMs', isNumber)),
     routeSubagents: pick(merged, DEFAULT_CONFIG, 'routeSubagents', isBool),
     adoptUserSelection: pick(merged, DEFAULT_CONFIG, 'adoptUserSelection', isBool),
+    routeFirstTurn: pick(merged, DEFAULT_CONFIG, 'routeFirstTurn', isBool),
+    autoSelect: pick(merged, DEFAULT_CONFIG, 'autoSelect', isBool),
     reasoningEffort: pick(merged, DEFAULT_CONFIG, 'reasoningEffort', isString).trim(),
     catalogRefreshMs: Math.max(15_000, pick(merged, DEFAULT_CONFIG, 'catalogRefreshMs', isNumber)),
     persistIntervalMs: Math.max(5_000, pick(merged, DEFAULT_CONFIG, 'persistIntervalMs', isNumber)),
