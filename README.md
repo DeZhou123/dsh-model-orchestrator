@@ -5,6 +5,52 @@
 
 装在 DSH 里就是一个 bundle：一个 Host 半身（路由决策）+ 一个浏览器半身（状态条与详情面板）。
 
+> **配套插件：[dsh-our-free-model](https://github.com/Ebony-Vinyl/dsh-our-free-model)（OFM）——推荐一起装，但不是依赖。**
+> OFM 把免费模型接进来，本插件在这些车道之间做调度。两者零代码依赖，
+> 只有 OFM 写在本机的状态文件被当作额外信号读进来。详见 [与 dsh-our-free-model 的关系](#与-dsh-our-free-model-的关系)。
+
+---
+
+## 与 dsh-our-free-model 的关系
+
+**本插件定位为 [dsh-our-free-model](https://github.com/Ebony-Vinyl/dsh-our-free-model)（OFM）的配套插件。** 分工是这样的：
+
+- **OFM 负责「把免费模型接进来，并记录渠道状态」**——免登录、免注册、免 API Key，
+  把一批前沿模型注册成 `our-free-model` / `our-free-model-region` 两条 provider 车道；
+  并在本机维护一份渠道账本（`$DSH_HOME/channel-pack/`，记录账号、每账号每模型的限流解禁时间、
+  逐渠道首字与今日 token，以及免费车道的可用性探测结果）。
+- **本插件负责「在这些车道之间做调度」**——选哪个模型（智力/速度/成本/用量打分）、走哪条渠道
+  （实时健康、限流、首字、粘滞）、失败了先换渠道还是换模型、锁定一个模型时怎么在它的渠道间切换。
+  它**不产生模型**，只决定请求走哪条已经存在的路。
+
+两者**没有代码依赖，也没有互相 import**（`package.json` 里没有 `dependencies`），
+模型清单来自内核的 LLM 注册表（`llm.listProviders/listModels/resolveModelInfo`），**不硬编码任何渠道**。
+
+| 你装了什么 | 得到什么 |
+| --- | --- |
+| 只装 OFM | 免费模型可用；走哪条渠道由 OFM 自己决定，本插件不参与 |
+| 只装本插件 | 任何 DSH provider 都能正常路由；少了 OFM 那层渠道旁证，改用本插件自己观测的流量账本 |
+| **两个都装（推荐）** | 免费模型 + 两级调度：渠道健康排序、失败先换渠道再换模型、偏好锁定、状态条全部生效，且冷却与限流以 OFM 账号池的真实解禁时间为准 |
+
+### OFM 提供哪些信号（可选）
+
+OFM 往本机写四个 JSON，本插件**只读不写**：
+
+| 文件 | 由谁写 | 不装 OFM 时 |
+| --- | --- | --- |
+| `$DSH_HOME/our-free-model/availability.json` | OFM | 免费车道的可用/不可用判定缺失，该渠道按「未知」处理 |
+| `$DSH_HOME/our-free-model/stats.json` | OFM | 免费车道的今日用量缺失，用量项按 0 计 |
+| `$DSH_HOME/channel-pack/state.json` | OFM（内嵌 channel pack） | 拿不到每账号每模型的限流解禁时间，冷却判定改用本插件自己观测到的失败 |
+| `$DSH_HOME/channel-pack/token-ledger.json` | OFM | 少了第二优先的延迟证据，延迟只认本插件实测和报告值 |
+
+读不到文件、格式不认、provider 不认识，一律降级成「没有信号」——`signal()` 返回 `available: null`（未知），
+不是 `false`（不可用），所以未知不会被当成坏渠道排掉。
+想彻底关掉这两个来源：配置里 `channelData: false` 和 `freeModelData: false`。
+
+**证据**：集成测试 `tools/integration.mjs` 把 `DSH_HOME` 指向一个空临时目录
+（既没有 `our-free-model/` 也没有 `channel-pack/`），在这个前提下加载真实的 Host 半身、
+跑通路由、失败换渠道、偏好模式与暂停恢复——27 项全过。
+
 ---
 
 ## 安装
@@ -27,34 +73,6 @@ Host 半身只在启动时加载一次，浏览器半身（状态条/详情面�
 
 验证：输入框下方出现模型状态条；`/route status` 能列出模型组；
 `model_orchestrator {"action":"status"}` 的 `catalog.total` > 0。
-
-### 依赖
-
-**本插件没有 npm 依赖**（`package.json` 里没有 `dependencies`），只 import Node 内置模块和它自己的 `src/`。
-模型清单来自内核的 LLM 注册表（`llm.listProviders/listModels/resolveModelInfo`），
-**不硬编码任何渠道**——你登录哪条渠道，它就路由哪条。
-
-**`dsh-our-free-model`（OFM）不是前置条件。** 两者没有代码依赖，也没有互相 import：
-OFM 只是往本机写了几个状态文件，本插件在读得到时把它们当**额外信号**用，读不到就当「没有信号」。
-
-| 文件 | 由谁写 | 不装 OFM 时 |
-| --- | --- | --- |
-| `$DSH_HOME/our-free-model/availability.json` | OFM | 免费车道的可用/不可用判定缺失，该渠道按「未知」处理 |
-| `$DSH_HOME/our-free-model/stats.json` | OFM | 免费车道的今日用量缺失，用量项按 0 计 |
-| `$DSH_HOME/channel-pack/state.json` | OFM（内嵌 channel pack） | 拿不到每账号每模型的限流解禁时间，冷却判定改用本插件自己观测到的失败 |
-| `$DSH_HOME/channel-pack/token-ledger.json` | OFM | 少了第二优先的延迟证据，延迟只认本插件实测和报告值 |
-
-也就是说：**不装 OFM 照样路由**，只是少一层来自渠道面板的旁证，多依赖本插件自己实测的流量账本
-（`llm/stream` 观测，始终可用）。`signal()` 在文件缺失时返回 `available: null`（未知），
-不是 `false`（不可用）——未知不会被判成坏渠道。
-
-想彻底关掉这两个来源：配置里 `channelData: false` 和 `freeModelData: false`。
-
-**证据**：集成测试 `tools/integration.mjs` 把 `DSH_HOME` 指向一个空临时目录
-（既没有 `our-free-model/` 也没有 `channel-pack/`），在这个前提下加载真实的 Host 半身、
-跑通路由、失败换渠道、偏好模式与暂停恢复——27 项全过。
-
----
 
 ## 它解决什么
 
@@ -144,10 +162,10 @@ OFM 只是往本机写了几个状态文件，本插件在读得到时把它们�
 | 数据 | 来源 | 用法 |
 | --- | --- | --- |
 | 模型清单、上下文窗口、模态、reasoning 档 | 内核 `llm.listProviders/listModels/resolveModelInfo` | 能力过滤、effort 选择 |
-| 渠道账号、每账号每模型的限流解禁时间 | `$DSH_HOME/channel-pack/state.json` | 渠道级可用性（只读） |
-| 今日每渠道每模型的请求/错误/token/首字 | `$DSH_HOME/channel-pack/token-ledger.json` | 第二优先的延迟证据 + 用量项 |
-| 免费车道的逐模型可用性与探测延迟 | `$DSH_HOME/our-free-model/availability.json` | 免费车道不可用/可用判定 |
-| 免费车道今日逐模型统计 | `$DSH_HOME/our-free-model/stats.json` | 免费车道用量 |
+| 渠道账号、每账号每模型的限流解禁时间 | OFM 写的 `$DSH_HOME/channel-pack/state.json` | 渠道级可用性（只读） |
+| 今日每渠道每模型的请求/错误/token/首字 | OFM 写的 `$DSH_HOME/channel-pack/token-ledger.json` | 第二优先的延迟证据 + 用量项 |
+| 免费车道的逐模型可用性与探测延迟 | OFM 写的 `$DSH_HOME/our-free-model/availability.json` | 免费车道不可用/可用判定 |
+| 免费车道今日逐模型统计 | OFM 写的 `$DSH_HOME/our-free-model/stats.json` | 免费车道用量 |
 | 真实流量的首字、token、失败 | 本插件观测 `llm/stream` | 第一优先的延迟证据 + 健康账本 |
 | 智力分、逐车道报告首字、标签 | 报告导入 / 随包 `priority-data.json` | **先验**，可信度收缩 |
 
@@ -302,7 +320,9 @@ node tools/integration.mjs  # 22 项：用 mock Cordis 上下文加载真实 Hos
 - **剩余额度不可知。** 免费渠道的上游不告诉你余额；面板显示的是状态、冷却、实测首字和本插件统计的用量。
 - **报告是快照。** 报告没有的模型按中性先验处理；跨版本 AA 分数不可比。
 - **家族识别仍可能有误。** 精确别名/规范表可信；模式匹配只有 0.7；识别错了会把不同模型当成同一个。
-- **渠道账本依赖 `dsh-our-free-model` 的私有文件格式。** 文件缺失或结构变化时自动退化为「没有信号」，不会阻断路由。
+- **渠道账本读的是 [dsh-our-free-model](https://github.com/Ebony-Vinyl/dsh-our-free-model) 的私有文件格式。**
+  那四个 JSON 是 OFM 的内部状态，没有版本承诺；文件缺失或结构变化时自动退化为「没有信号」，不会阻断路由。
+  见 [与 dsh-our-free-model 的关系](#与-dsh-our-free-model-的关系)。
 - **偏好模式的「全部渠道不可用」是全局判断。** 一次请求的图片/窗口限制只会临时改选，不会暂停偏好。
 - **切换会改变模型看到的上下文。** 换 provider 时内核会丢掉适配器私有的 replay 信封（文本与工具历史保留），
   并追加一条持久提示告知模型发生过切换——这是内核设计好的行为。
