@@ -1,4 +1,4 @@
 {
   "title": "Model routing",
-  "description": "Picks and re-picks the model for you from the speed/intelligence report: live lane quota and health, automatic downgrade when a lane runs out of quota or starts rate-limiting, and a quality/token-cost tradeoff driven by task complexity."
+  "description": "Two-level model routing: pick the best model first, then the best channel for it; on failure switch channel before model. A new session's first message already runs the routed model, an optional auto-select mode keeps the official picker as a display only, and preference mode locks one model and degrades only when every channel is exhausted. Live quota, health and usage."
 }
