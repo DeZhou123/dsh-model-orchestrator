@@ -6,15 +6,16 @@
 
 装在 DSH 里就是一个 bundle：一个 Host 半身（路由决策）+ 一个浏览器半身（状态条与详情面板）。
 
-> **配套插件：[dsh-our-free-model](https://github.com/Ebony-Vinyl/dsh-our-free-model)（OFM）——推荐一起装，但不是依赖。**
+> **配合 [dsh-our-free-model](https://github.com/Ebony-Vinyl/dsh-our-free-model)（OFM）使用——推荐一起装，但不是依赖。**
 > OFM 把免费模型接进来，本插件在这些车道之间做调度。两者零代码依赖，
-> 只有 OFM 写在本机的状态文件被当作额外信号读进来。详见 [与 dsh-our-free-model 的关系](#与-dsh-our-free-model-的关系)。
+> 只有 OFM 写在本机的状态文件被当作额外信号读进来。**这是单向适配、非官方**：
+> 我们读它的文件，它不需要知道本插件的存在。详见 [与 dsh-our-free-model 的关系](#与-dsh-our-free-model-的关系)。
 
 ---
 
 ## 与 dsh-our-free-model 的关系
 
-**本插件定位为 [dsh-our-free-model](https://github.com/Ebony-Vinyl/dsh-our-free-model)（OFM）的配套插件。** 分工是这样的：
+**本插件与 [dsh-our-free-model](https://github.com/Ebony-Vinyl/dsh-our-free-model)（OFM）配合使用。** 先说清楚关系的性质：这是**单向适配，不是合作，也不是官方关联**——OFM 的作者没有参与本插件、也没有为它背书；本插件只按 OFM 当前写盘的格式去读它留下的状态文件，不对 OFM 提任何适配要求，也不向它的仓库提交改动。分工是这样的：
 
 - **OFM 负责「把免费模型接进来，并记录渠道状态」**——免登录、免注册、免 API Key，
   把一批前沿模型注册成 `our-free-model` / `our-free-model-region` 两条 provider 车道；
@@ -47,6 +48,9 @@ OFM 往本机写四个 JSON，本插件**只读不写**：
 读不到文件、格式不认、provider 不认识，一律降级成「没有信号」——`signal()` 返回 `available: null`（未知），
 不是 `false`（不可用），所以未知不会被当成坏渠道排掉。
 想彻底关掉这两个来源：配置里 `channelData: false` 和 `freeModelData: false`。
+
+这四个文件是 OFM 的内部实现细节，没有版本承诺，也没有为第三方准备的契约。本插件**单向跟随**：
+按它现在写盘的格式读，格式变了就退回「没有信号」，不要求 OFM 为本插件做任何改动。
 
 **证据**：集成测试 `tools/integration.mjs` 把 `DSH_HOME` 指向一个空临时目录
 （既没有 `our-free-model/` 也没有 `channel-pack/`），在这个前提下加载真实的 Host 半身、
@@ -360,6 +364,8 @@ node tools/client-smoke.mjs # 44 项：用 stub ModuleLoader + 迷你 React/DOM 
 - **剩余额度不可知。** 免费渠道的上游不告诉你余额；面板显示的是状态、冷却、实测首字和本插件统计的用量。
 - **报告是快照。** 报告没有的模型按中性先验处理；跨版本 AA 分数不可比。
 - **家族识别仍可能有误。** 精确别名/规范表可信；模式匹配只有 0.7；识别错了会把不同模型当成同一个。
+- **对 OFM 是单向适配，不是合作，也不是官方关联。** 本插件只读它写的四个 JSON：不改它、不向它提需求、
+  也不向它的仓库提交适配改动；OFM 作者既未参与本插件的开发，也未为它背书。
 - **渠道账本读的是 [dsh-our-free-model](https://github.com/Ebony-Vinyl/dsh-our-free-model) 的私有文件格式。**
   那四个 JSON 是 OFM 的内部状态，没有版本承诺；文件缺失或结构变化时自动退化为「没有信号」，不会阻断路由。
   见 [与 dsh-our-free-model 的关系](#与-dsh-our-free-model-的关系)。
