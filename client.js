@@ -1062,7 +1062,7 @@ window.__ModuleLoader__.load({
       const needle = query.trim().toLowerCase()
       const rows = needle === ''
         ? groups
-        : groups.filter(group => [group.family, group.key, group.bestProvider, group.bestModel, ...(group.tags ?? [])]
+        : groups.filter(group => [group.family, group.key, group.bestProvider, group.bestModel, ...(group.models ?? []), ...(group.tags ?? [])]
           .filter(value => typeof value === 'string')
           .join(' ')
           .toLowerCase()

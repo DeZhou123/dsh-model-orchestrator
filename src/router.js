@@ -740,6 +740,11 @@ function summarizeGroup(group) {
     total: group.all.length,
     bestProvider: group.best?.row?.provider ?? null,
     bestModel: group.best?.row?.model ?? null,
+    // LOCAL PATCH 2026-10-24: the advertised ids behind one family. A lane that
+    // renames the same weights (`sn-deepseek-v4-1-flash-1017`) now lives in the
+    // family it belongs to, so the picker's search has to look at those ids too —
+    // otherwise typing the id a lane actually shows finds nothing.
+    models: [...new Set(group.all.map(entry => entry.row.model))],
     vision,
     contextWindow: contextWindow > 0 ? contextWindow : null,
     tags: group.tags,

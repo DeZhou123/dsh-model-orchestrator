@@ -254,6 +254,34 @@ export function createCatalog(options) {
   }
 
   /**
+   * Whether a deny/allow entry names the row's **family**, not just its id.
+   *
+   * LOCAL PATCH 2026-10-24: folding (see `src/families.js`) means one model is
+   * advertised under several ids — `sn-deepseek-v4-1-flash-1017` and
+   * `opencode/deepseek-v4.1-flash` are the same V4.1 Flash. Matching only the
+   * literal id would let "deny deepseek-v4.1-flash" through on the renamed
+   * spelling and route the very model the user blocked. A provider-qualified
+   * entry (`lane/model`) stays exact: that one is about a single route, not a
+   * model.
+   */
+  function matchesFamily(row, entry, family) {
+    const text = String(entry ?? '').trim().toLowerCase()
+    if (text === '') return false
+    // Exact id, or an exact `lane/model` route.
+    if (matches(row, entry)) return true
+    // A route entry never expands: it was written about one lane.
+    if (text.includes('/')) return false
+    const key = foldKey(family ?? row.family ?? '')
+    if (key === '') return false
+    if (foldKey(text) === key) return true
+    // Another advertised spelling of the same weights counts as the same model,
+    // so blocking `sn-deepseek-v4-1-flash-1017` also blocks the family it folded
+    // into — otherwise a rename would be a way around the user's own deny list.
+    const resolved = familyResolutionFor(dataset, text).key
+    return resolved !== null && foldKey(resolved) === key
+  }
+
+  /**
    * How much of the report's (maximum-effort) score a lane can actually deliver.
    *
    * The report measures every family at the benchmark's max reasoning tier, but
@@ -300,8 +328,8 @@ export function createCatalog(options) {
 
     const reportDenied = deniedReason(dataset, row.model)
     const providerDenied = (config.denyProviders ?? []).some(entry => String(entry).toLowerCase() === row.provider.toLowerCase())
-    const extraDeny = (config.deny ?? []).find(entry => matches(row, entry))
-    const allow = (config.allow ?? []).some(entry => matches(row, entry))
+    const extraDeny = (config.deny ?? []).find(entry => matchesFamily(row, entry, family))
+    const allow = (config.allow ?? []).some(entry => matchesFamily(row, entry, family))
     const channel = channelData?.signal(row.provider, row.model) ?? null
 
     let deniedReasonText = null

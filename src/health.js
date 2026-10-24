@@ -63,6 +63,17 @@ const REQUEST_CODES = new Set([
   'ABORTED',
 ])
 
+/**
+ * Request-shape refusals that arrive as a bare 400 with a business code.
+ *
+ * LOCAL PATCH 2026-10-24: WorkBuddy answers `{"code":11128,"msg":"first message
+ * is not system prompt"}` when the conversation does not open with a system
+ * message. That is our own message order, not the lane's health — but with no
+ * matching code it fell through to the transient default, so the lane collected
+ * a strike and cooled for 30 s on every occurrence.
+ */
+const REQUEST_SHAPE_TEXT = /first message is not system prompt|"code"\s*:\s*11128\b/i
+
 /** Codes the channel pack and the harness both use for an exhausted allowance. */
 const QUOTA_CODES = new Set(['QUOTA', 'ACCOUNT_QUOTA', 'QUOTA_EXCEEDED'])
 /** Codes for "this lane is switched off or locked", not a transient fault. */
@@ -86,9 +97,67 @@ const QUOTA_BUT_RATE_TEXT = /请稍后再试|稍后再试|稍候再试|均受限
  * zcode's "额度已用尽…改用其它模型" names one model and tells you to use another,
  * so cooling the whole lane wrongly disables working siblings (GLM-5.3-Flash was
  * live-probed healthy while GLM-5.3 was cooled).
+ *
+ * LOCAL PATCH 2026-10-24 (enumerated advice): those rules assume the advice is
+ * written as one contiguous phrase. buddy / workbuddy word it with a list —
+ * 「换用其它账号、其它模型或其它通道」— so the "其它" and "模型" are separated by
+ * 「账号、」 and all four alternatives miss. The mistake is expensive: one
+ * WorkBuddy `-sg` variant answering 14018 got filed as a LANE_WIDE quota fault and
+ * parked the same provider's x0.00 free lane (`deepseek-v4.1-flash`, live-probed
+ * healthy) for the full 24h cap. Allow a short enumeration between the pronoun
+ * and the noun, while still requiring that the sentence names a model at all.
  */
-const QUOTA_PER_MODEL_TEXT = /改用其[它他]模型|换用其[它他]模型|试试其[它他]模型|使用其[它他]模型/
-const REGION_TEXT = /region|country|地区|not available in your/i
+const QUOTA_PER_MODEL_TEXT =
+  /(?:改|换|使|试)用其[它他][^。；;，,\n]{0,16}?模型|试试其[它他]模型/
+/**
+ * Codes an adapter set deliberately. When one of these is present the prose
+ * around it is context, not evidence — see the gating in {@link classifyFailure}.
+ *
+ * LOCAL PATCH 2026-10-24 (explicit code outranks prose): the fuzzy text rules
+ * below are fallbacks for adapters that report nothing structured, but they ran
+ * *first*. Probed consequences: a 502 whose body mentioned a regional endpoint
+ * became a 24h lane-wide REGION block; a 500 mentioning a "credit ledger" became
+ * a lane-wide QUOTA; a TIMEOUT mentioning "region" parked the lane for a day.
+ * Each of those cools every sibling model on a healthy channel.
+ */
+const AUTHORITATIVE_CODES = new Set([
+  'TIMEOUT',
+  'SERVER',
+  'TRANSPORT',
+  'EMPTY_RESPONSE',
+  'STREAM_CUT',
+  // RATE_LIMIT is deliberately absent: a 429 is the one status that can carry
+  // either "slow down" or "the pool is empty", and the quota prose has to be
+  // read before the rate branch decides. The rate branch still matches on the
+  // code itself (see `code === 'RATE_LIMIT'`), so nothing is lost.
+  'REGION_BLOCKED',
+  'MODEL_NOT_FOUND',
+  'MODEL_UNAVAILABLE',
+  'INVALID_MODEL',
+  'MODEL_RETIRED',
+  'NO_ADAPTER',
+  'LANE_LOCKED',
+  'CONFIG_DISABLED',
+  'CONTEXT_WINDOW_EXCEEDED',
+])
+
+/**
+ * A free pool that is spent for the day, worded in English.
+ *
+ * LOCAL PATCH 2026-10-24: OpenCode answers 429 with
+ * `Free usage limit reached. Subscribe to OpenCode Go …`. It carries no business
+ * code, and none of the QUOTA_TEXT words appear ("usage limit" is not "quota"),
+ * so it fell through every branch to the 30-second transient default — the
+ * router kept re-picking a lane that cannot answer until the pool resets.
+ */
+const DAILY_QUOTA_TEXT =
+  /free usage limit|usage limit (?:reached|exceeded|exhausted)|daily (?:quota|limit) (?:reached|exceeded)|subscribe to opencode go|out of (?:free )?(?:credits|quota)/i
+/**
+ * Narrowed on purpose: a bare `region` / `country` / `地区` appears in ordinary
+ * transport and gateway prose ("connect timeout to region endpoint"), and the
+ * verdict for a real region block is a full day on the whole lane.
+ */
+const REGION_TEXT = /not available in your (?:region|country)|region not supported|地区封锁|地区限制|区域限制/i
 const AUTH_TEXT = /unauthor|invalid api key|invalid credential|sign in|登录|凭据/i
 const CONTEXT_TEXT = /context (window|length)|too many tokens|maximum context|上下文/i
 /**
@@ -134,6 +203,14 @@ export function classifyFailure(failure, context = {}) {
   const retryAfter = Number(failure?.providerRetryAfterMs ?? 0)
   const detail = message === '' ? code : `${code} ${message}`
 
+  // An adapter that names the failure kind has already done the classification.
+  // The prose rules below exist for adapters that report nothing structured, so
+  // when a code is present they must not overrule it — otherwise a 502 whose
+  // body happens to mention a regional endpoint is filed as a 24h REGION block.
+  const authoritative = AUTHORITATIVE_CODES.has(code)
+  /** Text fallback: only consulted when the adapter gave no verdict of its own. */
+  const byText = (pattern) => !authoritative && pattern.test(detail)
+
   if (code === 'CONTEXT_WINDOW_EXCEEDED' || (status === 0 && CONTEXT_TEXT.test(message))) {
     // Not a lane problem: this model is simply too small for this request. Keep
     // the lane healthy so a long-context sibling on the same lane can serve it.
@@ -157,13 +234,13 @@ export function classifyFailure(failure, context = {}) {
     }
   }
 
-  if (REQUEST_CODES.has(code)) {
+  if (REQUEST_CODES.has(code) || REQUEST_SHAPE_TEXT.test(detail)) {
     // A rejected request is ours to fix. Cooling the lane down for it would
     // punish a healthy channel for our own mistake.
     return { kind: KIND.REQUEST, cooldownMs: 0, scope: 'model', reason: message.slice(0, 200) || code, retryable: false }
   }
 
-  if (QUOTA_CODES.has(code) || status === 402 || QUOTA_TEXT.test(detail)) {
+  if (QUOTA_CODES.has(code) || status === 402 || byText(QUOTA_TEXT) || (!authoritative && DAILY_QUOTA_TEXT.test(detail))) {
     // LOCAL PATCH 2026-10-16 (quota-coded rate limits): the channel pack reports
     // short per-model rate limits with a QUOTA code and "请稍后再试" wording.
     // Live-probing proved the lane recovers in minutes, so this must be a
@@ -209,11 +286,11 @@ export function classifyFailure(failure, context = {}) {
     }
   }
 
-  if (code === 'REGION_BLOCKED' || REGION_TEXT.test(detail)) {
+  if (code === 'REGION_BLOCKED' || byText(REGION_TEXT)) {
     return { kind: KIND.REGION, cooldownMs: COOLDOWN.region, scope: 'lane', reason: '地区封锁', retryable: false }
   }
 
-  if (AUTH_CODES.has(code) || status === 401 || status === 403 || AUTH_TEXT.test(detail)) {
+  if (AUTH_CODES.has(code) || status === 401 || status === 403 || byText(AUTH_TEXT)) {
     return {
       kind: KIND.AUTH,
       cooldownMs: COOLDOWN.auth,
@@ -233,11 +310,11 @@ export function classifyFailure(failure, context = {}) {
     }
   }
 
-  if (code === 'EMPTY_RESPONSE' || code === 'STREAM_CUT' || EMPTY_TEXT.test(detail)) {
+  if (code === 'EMPTY_RESPONSE' || code === 'STREAM_CUT' || byText(EMPTY_TEXT)) {
     return { kind: KIND.TRANSIENT, cooldownMs: COOLDOWN.transient, scope: 'model', reason: '上游流中断/空响应', retryable: true }
   }
 
-  if (code === 'TIMEOUT' || TIMEOUT_TEXT.test(detail)) {
+  if (code === 'TIMEOUT' || byText(TIMEOUT_TEXT)) {
     // Repeated timeouts are a latency verdict, not a transient one.
     const kind = strikes >= 1 ? KIND.SLOW : KIND.TRANSIENT
     return {
@@ -249,7 +326,7 @@ export function classifyFailure(failure, context = {}) {
     }
   }
 
-  if (code === 'SERVER' || code === 'TRANSPORT' || SERVER_TEXT.test(detail)) {
+  if (code === 'SERVER' || code === 'TRANSPORT' || byText(SERVER_TEXT)) {
     return {
       kind: KIND.TRANSIENT,
       cooldownMs: Math.min(COOLDOWN.transient * 2 ** strikes, COOLDOWN.rateMax),

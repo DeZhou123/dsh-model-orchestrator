@@ -1446,7 +1446,7 @@ export function apply(ctx, rawConfig = {}) {
       const rows = needle === ''
         ? all
         : all.filter((group) => {
-          const haystack = [group.family, group.key, group.bestProvider, group.bestModel, ...(group.tags ?? [])]
+          const haystack = [group.family, group.key, group.bestProvider, group.bestModel, ...(group.models ?? []), ...(group.tags ?? [])]
             .filter(value => typeof value === 'string')
             .join(' ')
             .toLowerCase()

@@ -18,7 +18,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { familyResolution, foldKey, resolveFamily, tagsOf } from './families.js'
+import { familyResolution, foldCandidates, foldKey, resolveFamily, tagsOf } from './families.js'
 import { DEFAULT_NEVER_ROUTE, LANE_HINTS } from './policy-defaults.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -175,7 +175,7 @@ export function familyFor(dataset, modelId) {
  *
  * @param {ReturnType<typeof createDataset>} dataset - live dataset.
  * @param {string} modelId - advertised model id.
- * @returns {{key: string|null, confidence: number, source: string}}
+ * @returns {{key: string|null, confidence: number, source: string, foldedFrom?: string[]}}
  */
 export function familyResolutionFor(dataset, modelId) {
   const current = dataset.current
@@ -187,11 +187,27 @@ export function familyResolutionFor(dataset, modelId) {
   if (resolution.confidence > 0) return resolution
   // Fall back to the folded tables before accepting the identity family: this
   // is what folds `glm_5_3` onto the report's `glm-5.3` without an alias row.
-  const folded = foldKey(raw)
-  const canonical = current.canonicalFolded?.[folded]
-  if (canonical !== undefined) return { key: canonical, confidence: 1, source: 'canonical' }
-  const alias = current.aliasFolded?.[folded]
-  if (alias !== undefined) return { key: alias, confidence: 1, source: 'alias' }
+  //
+  // LOCAL PATCH 2026-10-24: the folded tables are also consulted for every
+  // reduced spelling the id admits, so a spelling variant of a *renamed* build
+  // (`sn-deepseek-v4_1_flash-1017`) reaches the same row as its exact sibling
+  // instead of depending on which separators the lane happened to pick.
+  const spellings = [{ key: raw, confidence: 1, ops: [] }, ...foldCandidates(raw)]
+  for (const spelling of spellings) {
+    const folded = foldKey(spelling.key)
+    const canonical = current.canonicalFolded?.[folded]
+    if (canonical !== undefined) {
+      return spelling.ops.length === 0
+        ? { key: canonical, confidence: 1, source: 'canonical' }
+        : { key: canonical, confidence: spelling.confidence, source: 'folded', foldedFrom: spelling.ops }
+    }
+    const alias = current.aliasFolded?.[folded]
+    if (alias !== undefined) {
+      return spelling.ops.length === 0
+        ? { key: alias, confidence: 1, source: 'alias' }
+        : { key: alias, confidence: spelling.confidence, source: 'folded', foldedFrom: spelling.ops }
+    }
+  }
   return resolution
 }
 

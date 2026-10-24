@@ -500,6 +500,11 @@ console.log('\n[10] 全部模型清单接口（偏好选择器用）')
   checkThat('it lists every model group', all.body.total >= 3 && all.body.count === all.body.total, String(all.body.total))
   checkThat('groups carry the facts a picker shows',
     all.body.groups.every(group => typeof group.vision === 'boolean' && 'contextWindow' in group))
+  // LOCAL PATCH 2026-10-24: one family can be advertised under several ids
+  // (build stamps, channel namespaces), and the picker's search has to see them.
+  checkThat('groups list the advertised ids behind the family',
+    all.body.groups.every(group => Array.isArray(group.models) && group.models.length > 0),
+    JSON.stringify(all.body.groups.map(group => group.models)))
   const filtered = await read('?q=mimo')
   checkThat('the q filter narrows the list',
     filtered.body.count < all.body.count && filtered.body.groups.every(group => (String(group.family) + ' ' + String(group.key)).toLowerCase().includes('mimo')),

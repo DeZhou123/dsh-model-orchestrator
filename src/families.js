@@ -99,6 +99,91 @@ export function normalizeModelId(id) {
 }
 
 /**
+ * Fold operations for ids whose lane marker or namespace the static tables have
+ * never seen (LOCAL PATCH 2026-10-24).
+ *
+ * Why this exists: lanes rename the same weights all the time, and every rename
+ * used to land on a *different* family. Raccoon served the V4.1 Flash weights as
+ * `sn-deepseek-v4-1-flash` and then re-advertised the identical model as
+ * `sn-deepseek-v4-1-flash-1017` (a 10/17 build stamp); our-free-model serves
+ * `opencode/deepseek-v4.1-flash` under a namespace {@link VENDOR_PREFIXES} has
+ * never heard of. Both fell to the unknown-quality floor and became singleton
+ * families, so the preference picker listed three "different" DeepSeek rows, the
+ * merged channel count was wrong, and locking a preference could only see one of
+ * them.
+ *
+ * Handing every new spelling to a hand-maintained table does not scale, so the
+ * fold is **verified instead of guessed**: {@link foldCandidates} proposes
+ * progressively reduced spellings, and resolution accepts one only when it lands
+ * exactly on a model the dataset already knows. A bad guess therefore costs
+ * nothing, and a new build stamp, region marker or channel namespace resolves on
+ * the next refresh with no code change.
+ *
+ * Confidence is the weakest operation on the path: stripping a build stamp from
+ * weights we have measured is nearly free information (0.95), while guessing
+ * through a channel's own prefix is worth less (0.85).
+ */
+const FOLD_STEPS = [
+  // The date must win over the numeric rule, or `qwen3.5-plus-2026-04-20` would
+  // be peeled one number at a time and could stop on a wrong spelling first.
+  { op: 'snapshot-date', confidence: 0.95, apply: key => key.replace(/(?<=[a-z0-9])[-_]\d{4}[-_]\d{2}[-_]\d{2}$/, '') },
+  // `-1017`, `-0731`, `-v2`, `-b3`: a build/revision stamp, not a model.
+  { op: 'build-tag', confidence: 0.95, apply: key => key.replace(/(?<=[a-z0-9])[-_](?:\d{2,8}|[vbr]\d{1,4})$/, '') },
+  // `deepseek-v4.1-flash-sg`: the region a lane serves from, not the weights.
+  { op: 'region-tag', confidence: 0.95, apply: key => key.replace(/[-_](?:sg|my|us|eu|jp|cn|hk|tw|kr|intl|global|latest|apac|mea)$/, '') },
+  // `opencode/deepseek-v4.1-flash`, `codearts/x`: one namespace level.
+  { op: 'namespace', confidence: 0.95, apply: key => (key.includes('/') ? key.slice(key.indexOf('/') + 1) : null) },
+  // `sn-glm-5-3`, `sn-kimi-k3`: a channel's own two-letter prefix.
+  { op: 'channel-tag', confidence: 0.85, apply: key => key.replace(/^[a-z]{2,8}[-_](?=[a-z])/, '') },
+  // `deepseek-v4-1-flash` spelled with dashes instead of dots.
+  { op: 'version-dash', confidence: 0.85, apply: key => key.replace(/(?<=\d)[-_.](?=\d)/g, '.') },
+]
+
+/**
+ * Progressively reduced spellings of one advertised id, breadth-first.
+ *
+ * Depth comes before breadth so the candidate that used the *fewest* operations
+ * (i.e. the most faithful reading) is checked first, and a candidate is emitted
+ * at most once. Nothing here decides anything: each key is a hypothesis for
+ * {@link resolveFamily} to verify against the known families.
+ *
+ * @param {string} id - advertised model id.
+ * @param {{maxDepth?: number, limit?: number}} [options]
+ * @returns {{key: string, ops: string[], confidence: number}[]} hypotheses, best first.
+ */
+export function foldCandidates(id, options = {}) {
+  const raw = String(id ?? '').trim().toLowerCase()
+  if (raw === '') return []
+  const maxDepth = Math.max(1, Math.min(4, options.maxDepth ?? 3))
+  const limit = Math.max(1, options.limit ?? 48)
+  const seen = new Set([raw])
+  const out = []
+  let frontier = [{ key: raw, ops: [], confidence: 1 }]
+  for (let depth = 1; depth <= maxDepth && out.length < limit; depth += 1) {
+    const next = []
+    for (const parent of frontier) {
+      for (const step of FOLD_STEPS) {
+        const folded = step.apply(parent.key)
+        if (typeof folded !== 'string' || folded === '' || folded === parent.key) continue
+        if (seen.has(folded)) continue
+        seen.add(folded)
+        const entry = {
+          key: folded,
+          ops: [...parent.ops, step.op],
+          confidence: Math.min(parent.confidence, step.confidence),
+        }
+        out.push(entry)
+        next.push(entry)
+        if (out.length >= limit) break
+      }
+      if (out.length >= limit) break
+    }
+    frontier = next
+  }
+  return out
+}
+
+/**
  * Corrections that outrank everything else, including the report's own canonical
  * table (LOCAL PATCH 2026-10-16).
  *
@@ -363,6 +448,24 @@ export const PENALTY_TAGS = {
   'weak-reasoning': 0.08,
 }
 
+/** One exact lookup across the correction, canonical, user-alias and built-in tables. */
+function exactFamily(key, canonical, extraAliases) {
+  if (key === '') return null
+  if (FAMILY_CORRECTIONS[key] !== undefined) return { family: FAMILY_CORRECTIONS[key], source: 'correction' }
+  if (canonical[key] !== undefined) return { family: canonical[key], source: 'canonical' }
+  if (extraAliases[key] !== undefined) return { family: extraAliases[key], source: 'alias' }
+  if (FAMILY_ALIASES[key] !== undefined) return { family: FAMILY_ALIASES[key], source: 'alias' }
+  return null
+}
+
+/** One pattern pass over the naming conventions no table lists. */
+function patternFamily(key) {
+  for (const [pattern, family] of FAMILY_PATTERNS) {
+    if (pattern.test(key)) return family
+  }
+  return null
+}
+
 /**
  * Resolve an advertised model id to its report family.
  *
@@ -375,33 +478,7 @@ export const PENALTY_TAGS = {
  * @returns {string | null} family id, or null when the model has no known family.
  */
 export function resolveFamily(modelId, canonical = {}, extraAliases = {}) {
-  const raw = String(modelId ?? '').trim().toLowerCase()
-  if (raw === '') return null
-  const normalized = normalizeModelId(raw)
-
-  // LOCAL PATCH 2026-10-16: a non-interactive endpoint keeps its own identity.
-  // Without this, stripping the vendor namespace turns `deepseek-v4.1-flash:batch`
-  // into something the `/^deepseek-v4\.1-flash/` pattern happily folds into the
-  // interactive family — the exact mix-up this guard exists to prevent.
-  if (NON_INTERACTIVE_SUFFIX.test(raw)) return raw
-
-  // LOCAL PATCH 2026-10-16: corrections win over the report's canonical table —
-  // that table is exactly what is wrong about `deepseek-flash`.
-  for (const key of [raw, normalized]) {
-    if (FAMILY_CORRECTIONS[key] !== undefined) return FAMILY_CORRECTIONS[key]
-  }
-
-  for (const key of [raw, normalized]) {
-    if (canonical[key] !== undefined) return canonical[key]
-    if (extraAliases[key] !== undefined) return extraAliases[key]
-    if (FAMILY_ALIASES[key] !== undefined) return FAMILY_ALIASES[key]
-  }
-  for (const [pattern, family] of FAMILY_PATTERNS) {
-    if (pattern.test(normalized)) return family
-  }
-  // An unknown id is still a family of one: routing needs a stable identity even
-  // when the report has nothing to say about it.
-  return normalized === '' ? null : normalized
+  return familyResolution(modelId, canonical, extraAliases).key
 }
 
 /**
@@ -413,32 +490,74 @@ export function resolveFamily(modelId, canonical = {}, extraAliases = {}) {
  * intelligence of its namesake is how `glm-5.3-flashx` inherited the full
  * 42-point score of `glm-5.3-flash` without anyone measuring it.
  *
+ * Four passes, strongest evidence first (LOCAL PATCH 2026-10-24 adds the third):
+ *
+ * 1. **exact** — the id, or the id with its static vendor/lane markers stripped,
+ *    is already a family or alias. Unchanged from before.
+ * 2. **folded exact** — a spelling reached by one of the {@link FOLD_STEPS}
+ *    (build stamp, region, channel namespace, dashed version) lands exactly on a
+ *    known family. This is what keeps `sn-deepseek-v4-1-flash-1017` and
+ *    `opencode/deepseek-v4.1-flash` on the family the report measured, instead of
+ *    giving each build its own singleton family. It outranks the loose patterns
+ *    because landing on an exact known id is better evidence than a shared
+ *    prefix.
+ * 3. **patterned** — the naming conventions in {@link FAMILY_PATTERNS}, which is
+ *    still a guess and therefore scores 0.7.
+ * 4. **identity** — an unknown id is still a family of one: routing needs a
+ *    stable identity even when the report has nothing to say about it.
+ *
  * @param {string} modelId - the id a lane advertises.
  * @param {Record<string, string>} [canonical] - families the report scored.
  * @param {Record<string, string>} [extraAliases] - user/imported aliases.
- * @returns {{key: string|null, confidence: number, source: 'correction'|'alias'|'canonical'|'pattern'|'identity'}}
+ * @returns {{key: string|null, confidence: number, source: 'correction'|'alias'|'canonical'|'folded'|'pattern'|'identity', foldedFrom?: string[]}}
  */
 export function familyResolution(modelId, canonical = {}, extraAliases = {}) {
   const raw = String(modelId ?? '').trim().toLowerCase()
   if (raw === '') return { key: null, confidence: 0, source: 'identity' }
   const normalized = normalizeModelId(raw)
 
+  // LOCAL PATCH 2026-10-16: a non-interactive endpoint keeps its own identity.
+  // Without this, stripping the vendor namespace turns `deepseek-v4.1-flash:batch`
+  // into something the `/^deepseek-v4\.1-flash/` pattern happily folds into the
+  // interactive family — the exact mix-up this guard exists to prevent.
   if (NON_INTERACTIVE_SUFFIX.test(raw)) {
     return { key: raw, confidence: 0, source: 'identity' }
   }
-  for (const key of [raw, normalized]) {
-    if (FAMILY_CORRECTIONS[key] !== undefined) {
-      return { key: FAMILY_CORRECTIONS[key], confidence: 1, source: 'correction' }
+
+  const legacyKeys = normalized === raw ? [raw] : [raw, normalized]
+
+  // 1. exact, on the id as advertised and after the static marker strip.
+  for (const key of legacyKeys) {
+    const hit = exactFamily(key, canonical, extraAliases)
+    if (hit !== null) return { key: hit.family, confidence: 1, source: hit.source }
+  }
+
+  // 2. fold-and-verify. The candidate list is ordered best-first by how few
+  //    operations it needed, and every hit below is a model the dataset knows.
+  const folds = foldCandidates(raw)
+  for (const candidate of folds) {
+    const hit = exactFamily(candidate.key, canonical, extraAliases)
+    if (hit !== null) {
+      return {
+        key: hit.family,
+        confidence: candidate.confidence,
+        source: 'folded',
+        foldedFrom: candidate.ops,
+      }
     }
   }
-  for (const key of [raw, normalized]) {
-    if (canonical[key] !== undefined) return { key: canonical[key], confidence: 1, source: 'canonical' }
-    if (extraAliases[key] !== undefined) return { key: extraAliases[key], confidence: 1, source: 'alias' }
-    if (FAMILY_ALIASES[key] !== undefined) return { key: FAMILY_ALIASES[key], confidence: 1, source: 'alias' }
+
+  // 3. naming conventions.
+  for (const key of legacyKeys) {
+    const family = patternFamily(key)
+    if (family !== null) return { key: family, confidence: 0.7, source: 'pattern' }
   }
-  for (const [pattern, family] of FAMILY_PATTERNS) {
-    if (pattern.test(normalized)) return { key: family, confidence: 0.7, source: 'pattern' }
+  for (const candidate of folds) {
+    const family = patternFamily(candidate.key)
+    if (family !== null) return { key: family, confidence: 0.65, source: 'pattern', foldedFrom: candidate.ops }
   }
+
+  // 4. identity.
   return { key: normalized === '' ? null : normalized, confidence: 0, source: 'identity' }
 }
 

@@ -19,11 +19,11 @@ import { createDataset, familyFor, familyResolutionFor, familyInfo, reportLaneTt
 import { createHealth, KIND } from '../src/health.js'
 import { createCatalog, laneMultiplier, laneIsFree } from '../src/catalog.js'
 import { createChannelData, packDayKey } from '../src/channels.js'
-import { chooseEffort, evaluate, latencyFor, readNeeds, resolvePreferenceGroup, selectRoute } from '../src/router.js'
+import { chooseEffort, evaluate, latencyFor, rankGroups, readNeeds, resolvePreferenceGroup, selectRoute } from '../src/router.js'
 import { resolveConfig, sanitizePatch } from '../src/config.js'
 import { datasetFromReport } from '../src/report-import.js'
 import { DEFAULT_CONFIG } from '../src/policy-defaults.js'
-import { foldKey, NON_INTERACTIVE_SUFFIX } from '../src/families.js'
+import { foldCandidates, foldKey, NON_INTERACTIVE_SUFFIX } from '../src/families.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const REPORT = process.argv[2] ?? path.resolve(HERE, '..', '..', 'REPORT-模型测速与优先级.md')
@@ -98,6 +98,42 @@ checkThat('a region-blocked model is denied', deniedReason(dataset, 'muse-spark-
 checkThat('a merely slow model is NOT hard-denied', deniedReason(dataset, 'gpt-oss-20b') === null)
 checkThat('a batch endpoint keeps its own identity', NON_INTERACTIVE_SUFFIX.test('deepseek-v4.1-flash:batch'))
 
+// LOCAL PATCH 2026-10-24: lanes rename the same weights. Every id below is one
+// this machine really received (channel-pack/token-ledger.json, 2026-10-24), and
+// each used to become a family of its own — a separate picker row with no
+// intelligence, a wrong channel count, and a preference that could only see one
+// spelling of one model.
+console.log('\n[2b] renamed builds and unknown channel namespaces')
+check('sn-...-flash-1017 is the same V4.1 Flash', familyFor(dataset, 'sn-deepseek-v4-1-flash-1017'), 'deepseek-v4.1-flash')
+check('opencode/deepseek-v4.1-flash is the same family', familyFor(dataset, 'opencode/deepseek-v4.1-flash'), 'deepseek-v4.1-flash')
+check('deepseek/deepseek-v4.1-flash-1017 is the same family', familyFor(dataset, 'deepseek/deepseek-v4.1-flash-1017'), 'deepseek-v4.1-flash')
+check('cline-pass/deepseek-v4.1-flash-1017 is the same family', familyFor(dataset, 'cline-pass/deepseek-v4.1-flash-1017'), 'deepseek-v4.1-flash')
+check('a regional marker is not a model', familyFor(dataset, 'deepseek-v4.1-flash-sg'), 'deepseek-v4.1-flash')
+check('a legacy -latest marker still lands on the family', familyFor(dataset, '~deepseek/deepseek-flash-latest'), 'deepseek-v4.1-flash')
+checkThat('a build stamp is a confident identification, not a pattern guess',
+  familyResolutionFor(dataset, 'sn-deepseek-v4-1-flash-1017').confidence === 0.95
+  && familyResolutionFor(dataset, 'sn-deepseek-v4-1-flash-1017').source === 'folded',
+  familyResolutionFor(dataset, 'sn-deepseek-v4-1-flash-1017').confidence + '/' + familyResolutionFor(dataset, 'sn-deepseek-v4-1-flash-1017').source)
+checkThat('the fold says which markers it removed',
+  JSON.stringify(familyResolutionFor(dataset, 'sn-deepseek-v4-1-flash-1017').foldedFrom) === '["build-tag"]',
+  JSON.stringify(familyResolutionFor(dataset, 'sn-deepseek-v4-1-flash-1017').foldedFrom))
+checkThat('a build stamp alone never invents a family',
+  familyFor(dataset, 'brand-new-model-2099') === 'brand-new-model-2099'
+  && familyResolutionFor(dataset, 'brand-new-model-2099').confidence === 0)
+checkThat('a non-interactive endpoint stays out of the interactive family',
+  familyFor(dataset, 'deepseek/deepseek-v4.1-flash:batch') === 'deepseek/deepseek-v4.1-flash:batch')
+checkThat('the fewest fold operations win the candidate order',
+  foldCandidates('sn-deepseek-v4-1-flash-1017')[0].key === 'sn-deepseek-v4-1-flash'
+  && foldCandidates('sn-deepseek-v4-1-flash-1017')[0].ops.length === 1,
+  JSON.stringify(foldCandidates('sn-deepseek-v4-1-flash-1017')[0]))
+checkThat('two spellings of one model produce one grouping key',
+  foldKey(familyFor(dataset, 'sn-deepseek-v4-1-flash-1017')) === foldKey(familyFor(dataset, 'deepseek-v4.1-flash'))
+  && foldKey(familyFor(dataset, 'opencode/deepseek-v4.1-flash')) === foldKey(familyFor(dataset, 'deepseek-v4.1-flash')))
+checkThat('a version spelled with dashes resolves to the dotted family',
+  familyFor(dataset, 'qwen-3-7-plus') === 'qwen3.7-plus')
+checkThat('a model whose own name ends in digits is left alone',
+  familyFor(dataset, 'gpt-oss-20b') === 'gpt-oss-20b' && familyFor(dataset, 'nemotron-3-super-120b-a12b') === 'nemotron-3-super-120b-a12b')
+
 console.log('\n[3] failure classification')
 const classify = (failure) => createHealth({ userDir: null, clock }).classifyFailure(failure, { strikes: 0, now: NOW })
 check('RATE_LIMIT      -> rate', classify({ code: 'RATE_LIMIT', status: 429 }).kind, KIND.RATE)
@@ -128,6 +164,43 @@ checkThat('quota-coded rate limit is a model-scoped retry',
   buddyRate.kind === KIND.RATE && buddyRate.scope === 'model' && buddyRate.retryable === true)
 const zcodePerModel = classify({ code: 'QUOTA_EXCEEDED', message: 'zcode: 账号在模型 "GLM-5.3" 上的额度已用尽，请改用其它模型。' })
 checkThat('per-model quota stays model-scoped', zcodePerModel.kind === KIND.QUOTA && zcodePerModel.scope === 'model')
+// LOCAL PATCH 2026-10-24: the advice is often worded as a list. WorkBuddy answers 14018 with
+// 「换用其它账号、其它模型或其它通道」, which used to miss every alternative and cool the lane.
+const buddyPerModel = classify({
+  code: 'QUOTA_EXCEEDED',
+  message: 'workbuddy: 账号额度已用尽（上游 code 14018），模型 deepseek-v4.1-flash-sg 在 WorkBuddy (国际版) 下已无可用额度。'
+    + '换用其它账号、其它模型或其它通道；等待不会恢复：上游没有给出重置时刻。',
+})
+checkThat('an enumerated 「其它账号、其它模型」 advice stays model-scoped',
+  buddyPerModel.kind === KIND.QUOTA && buddyPerModel.scope === 'model')
+
+// LOCAL PATCH 2026-10-24 (explicit code outranks prose): a structured code must not be
+// overruled by words that merely appear nearby — a 502 body mentioning a regional
+// endpoint used to become a 24h lane-wide region block.
+const regionByProse = classify({ code: 'SERVER', status: 502, message: 'bad gateway (region ap-others)' })
+checkThat('a 502 mentioning a region stays transient', regionByProse.kind === KIND.TRANSIENT && regionByProse.scope === 'model')
+const creditByProse = classify({ code: 'SERVER', status: 500, message: 'internal server error (credit ledger)' })
+checkThat('a 500 mentioning a credit ledger stays transient', creditByProse.kind === KIND.TRANSIENT)
+const regionTimeout = classify({ code: 'TIMEOUT', message: 'connect timeout to region endpoint' })
+checkThat('a timeout mentioning a region is not a day-long block',
+  regionTimeout.kind === KIND.TRANSIENT && regionTimeout.cooldownMs < 60_000)
+const authTimeout = classify({ code: 'TIMEOUT', message: '凭据校验超时' })
+checkThat('a timeout mentioning credentials is not an auth failure', authTimeout.kind === KIND.TRANSIENT)
+
+// The narrowed region rule still catches a real block.
+const realRegion = classify({ code: 'REGION_BLOCKED', status: 403, message: 'not available in your country' })
+checkThat('a real region block still cools the lane', realRegion.kind === KIND.REGION && realRegion.scope === 'lane')
+const regionProseOnly = classify({ status: 403, message: 'not available in your region' })
+checkThat('region prose alone still cools the lane', regionProseOnly.kind === KIND.REGION)
+
+// OpenCode's spent-for-the-day 429 carries no business code and no "quota" word.
+const openCodeDaily = classify({ code: 'UPSTREAM_ERROR', status: 429, message: 'our-free-model: Free usage limit reached. Subscribe to OpenCode Go to keep going: https://opencode.ai/go' })
+checkThat('a spent free pool is a quota, not a 30s transient',
+  openCodeDaily.kind === KIND.QUOTA && openCodeDaily.cooldownMs > 60_000)
+
+// WorkBuddy's 11128 is our message order, not the lane's health.
+const notSystemFirst = classify({ code: 'INVALID_REQUEST', status: 400, message: '{"code":11128,"msg":"first message is not system prompt"}' })
+checkThat('a message-order refusal is our own request', notSystemFirst.kind === KIND.REQUEST && notSystemFirst.cooldownMs === 0)
 const realQuota = classify({ code: 'QUOTA_EXCEEDED', message: 'cline: 额度已用尽（HTTP 402 Insufficient credits）' })
 checkThat('a genuine account-wide quota cools the lane', realQuota.kind === KIND.QUOTA && realQuota.scope === 'lane')
 
@@ -267,11 +340,16 @@ console.log('\n[5] catalog decoration')
       { provider: 'buddy', id: 'DeepSeek-V4-Flash', name: 'DeepSeek-V4-Flash · x0.2' },
       { provider: 'buddy', id: 'DeepSeek-V4-Flash-Official', name: 'DeepSeek-V4-Flash · x0.2' },
       { provider: 'buddy', id: 'mimo-v2.6-flash', name: 'Mimo Flash · x0.06' },
+      // LOCAL PATCH 2026-10-24: the same weights under a 10/17 build stamp and a
+      // friendlier display name — exactly what Raccoon serves after a rename.
+      { provider: 'buddy', id: 'sn-deepseek-v4-1-flash-1017', name: 'DeepSeek-V4.1-Flash · x0.05' },
     ],
     trae: [
       { provider: 'trae', id: 'glm-5.3', name: 'GLM-5.3 · x0.79' },
       { provider: 'trae', id: 'deepseek-v4.1-flash:batch', name: 'DeepSeek V4.1 · x0.1' },
       { provider: 'trae', id: 'some-new-model', name: 'Some New Model · x0.3' },
+      // The same weights advertised under an unknown channel namespace.
+      { provider: 'trae', id: 'opencode/deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash · x0.1' },
     ],
   }
   const infos = {
@@ -327,6 +405,60 @@ console.log('\n[5] catalog decoration')
   checkThat('agent-weak is tagged', (catalog.row('buddy', 'mimo-v2.6-flash')?.tags ?? []).includes('agent-weak'))
   checkThat('a pattern match shrinks the intelligence prior',
     (catalog.row('buddy', 'mimo-v2.6-flash')?.quality ?? 1) < (familyInfo(dataset, 'mimo-v2.6-flash').intel === null ? 1 : 0.99))
+
+  // LOCAL PATCH 2026-10-24: a renamed build is the same model on a lane, not a
+  // model of its own — it must land on the family (and its intelligence) and be
+  // listed as one id of that family, so the picker shows one row with both ids.
+  const renamed = catalog.row('buddy', 'sn-deepseek-v4-1-flash-1017')
+  checkThat('a renamed build resolves to the measured family',
+    renamed?.family === 'deepseek-v4.1-flash' && renamed?.familySource === 'folded' && renamed?.intel === 39,
+    [renamed?.family, renamed?.familySource, renamed?.intel].join('/'))
+  checkThat('the build stamp no longer shadows the family score',
+    (renamed?.quality ?? 0) > 0.6,
+    String(renamed?.quality))
+  const ranked = rankGroups({ rows: current.rows, health: createHealth({ userDir: null, clock }), config, anchor: null })
+  const dsGroup = ranked.find(group => group.family === 'deepseek-v4.1-flash')
+  // Blocking a model has to block every spelling of it, or the renamed build is
+  // a way around the user's own deny list.
+  const denyCatalog = createCatalog({
+    ctx: { llm },
+    dataset,
+    channelData: null,
+    getConfig: () => resolveConfig({ deny: ['deepseek-v4.1-flash'] }, {}),
+  })
+  await denyCatalog.refresh('test')
+  checkThat('denying the family name blocks every spelling of it',
+    denyCatalog.current.rows
+      .filter(row => row.family === 'deepseek-v4.1-flash')
+      .every(row => row.denied === true),
+    denyCatalog.current.rows.filter(row => row.family === 'deepseek-v4.1-flash').map(row => row.model + '=' + row.denied).join(' '))
+  const denyByIdCatalog = createCatalog({
+    ctx: { llm },
+    dataset,
+    channelData: null,
+    getConfig: () => resolveConfig({ deny: ['sn-deepseek-v4-1-flash-1017'] }, {}),
+  })
+  await denyByIdCatalog.refresh('test')
+  checkThat('denying one build id blocks the family it belongs to',
+    denyByIdCatalog.row('trae', 'opencode/deepseek-v4.1-flash')?.denied === true,
+    String(denyByIdCatalog.row('trae', 'opencode/deepseek-v4.1-flash')?.deniedReason))
+  const denyLaneCatalog = createCatalog({
+    ctx: { llm },
+    dataset,
+    channelData: null,
+    getConfig: () => resolveConfig({ deny: ['buddy/sn-deepseek-v4-1-flash-1017'] }, {}),
+  })
+  await denyLaneCatalog.refresh('test')
+  checkThat('a provider-qualified deny entry blocks one lane only',
+    denyLaneCatalog.row('buddy', 'sn-deepseek-v4-1-flash-1017')?.denied === true
+    && denyLaneCatalog.row('trae', 'opencode/deepseek-v4.1-flash')?.denied !== true)
+  checkThat('both spellings live in one group on two lanes, with both ids listed',
+    dsGroup !== undefined
+    && dsGroup.models.length === 2
+    && dsGroup.models.includes('sn-deepseek-v4-1-flash-1017')
+    && dsGroup.models.includes('opencode/deepseek-v4.1-flash')
+    && dsGroup.total === 2,
+    JSON.stringify([dsGroup?.models, dsGroup?.total]))
 }
 
 console.log('\n[6] two-level routing')
@@ -606,7 +738,8 @@ console.log('\n[12] report import')
 {
   const markdown = fs.readFileSync(REPORT, 'utf8')
   const { dataset: imported, stats } = datasetFromReport(markdown, { baseCanonical: {} })
-  check('the report has 12 lanes', stats.lanes, 12)
+  // 2026-10-24: 报告增补第 13 条车道（FreeLLMAPI OVH 匿名），断言跟着报告走
+  check('the report has 13 lanes', stats.lanes, 13)
   checkThat('the report resolves more than 70 families', stats.distinctFamilies > 70, String(stats.distinctFamilies))
   checkThat('the corrected deepseek score is imported', imported.families['deepseek-v4.1-flash'].intel === 39,
     String(imported.families['deepseek-v4.1-flash'].intel))
