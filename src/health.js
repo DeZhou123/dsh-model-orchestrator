@@ -91,7 +91,8 @@ const RATE_TEXT = /rate limit|too many requests|限流|频率/i
  * parking it until midnight as a lane-wide quota strands the cheapest routes
  * (buddy carries the x0.11 V4.1 Flash).
  */
-const QUOTA_BUT_RATE_TEXT = /请稍后再试|稍后再试|稍候再试|均受限|受限，请|频率受限|限流|rate.?limit|too many requests|try again later/i
+const QUOTA_BUT_RATE_TEXT =
+  /请稍后再试|稍后再试|稍候再试|均受限|受限，请|频率受限|限流|rate.?limit|too many requests|try again later|frequency limit|usage exceeds frequency/i
 /**
  * LOCAL PATCH 2026-10-16: quota failures the channel itself says are per-model.
  * zcode's "额度已用尽…改用其它模型" names one model and tells you to use another,
@@ -108,7 +109,7 @@ const QUOTA_BUT_RATE_TEXT = /请稍后再试|稍后再试|稍候再试|均受限
  * and the noun, while still requiring that the sentence names a model at all.
  */
 const QUOTA_PER_MODEL_TEXT =
-  /(?:改|换|使|试)用其[它他][^。；;，,\n]{0,16}?模型|试试其[它他]模型/
+  /(?:改|换|使|试)用其[它他][^。；;，,\n]{0,16}?模型|试试其[它他]模型|switch(?:ing)? to (?:the )?(?:other|another) models?/i
 /**
  * Codes an adapter set deliberately. When one of these is present the prose
  * around it is context, not evidence — see the gating in {@link classifyFailure}.

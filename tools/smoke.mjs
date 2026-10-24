@@ -201,6 +201,21 @@ checkThat('a spent free pool is a quota, not a 30s transient',
 // WorkBuddy's 11128 is our message order, not the lane's health.
 const notSystemFirst = classify({ code: 'INVALID_REQUEST', status: 400, message: '{"code":11128,"msg":"first message is not system prompt"}' })
 checkThat('a message-order refusal is our own request', notSystemFirst.kind === KIND.REQUEST && notSystemFirst.cooldownMs === 0)
+
+// WorkBuddy answers its per-model frequency limit (6004) in English only. Live capture
+// 2026-10-24: "usage exceeds frequency limit, but don't worry, your usage will reset at
+// 2026-10-25 12:49:06 UTC+8, alternatively, you can switch to the other models".
+// Neither "frequency limit" nor "switch to the other models" was in the tables, so the
+// verdict fell through to a 30s transient and the lane looked healthy while it answered 429.
+const wb6004 = '{"code":6004,"msg":"usage exceeds frequency limit, but don\'t worry, your usage will reset at 2026-10-25 12:49:06 UTC+8, alternatively, you can switch to the other models to continue using it.","requestId":"x"}'
+const wbPerModelRate = classify({ code: 'QUOTA_EXCEEDED', status: 429, message: wb6004 })
+checkThat('an English per-model frequency limit is a model-scoped retry',
+  wbPerModelRate.kind === KIND.RATE && wbPerModelRate.scope === 'model' && wbPerModelRate.retryable === true)
+const wbNoCode = classify({ status: 429, message: wb6004 })
+checkThat('the same wording classifies without a business code', wbNoCode.kind === KIND.RATE && wbNoCode.scope === 'model')
+// A genuine account-wide allowance still cools the lane.
+const accountWide = classify({ code: 'QUOTA_EXCEEDED', status: 402, message: 'cline: 额度已用尽（HTTP 402 Insufficient credits）' })
+checkThat('an account-wide allowance still cools the lane', accountWide.kind === KIND.QUOTA && accountWide.scope === 'lane')
 const realQuota = classify({ code: 'QUOTA_EXCEEDED', message: 'cline: 额度已用尽（HTTP 402 Insufficient credits）' })
 checkThat('a genuine account-wide quota cools the lane', realQuota.kind === KIND.QUOTA && realQuota.scope === 'lane')
 
