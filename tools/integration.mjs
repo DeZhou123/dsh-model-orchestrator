@@ -286,6 +286,32 @@ checkThat('recovery is notified once', notifications.length === beforeResume + 1
 const status = await tools.get('model_orchestrator').execute({ action: 'status' })
 checkThat('status clears the paused flag', status.preference.suspended === false && status.preference.active === true)
 
+console.log('\n[4b2] a live call is counted while it is open')
+{
+  // The observer takes an in-flight lease before the first chunk and releases it
+  // in `finally`. Both halves matter: without the release, one crashed turn
+  // makes its lane look permanently busy to every other session.
+  let seenDuring = null
+  const probe = fire('llm/stream', {
+    provider: 'trae',
+    model: 'mimo-v2.6-pro',
+    sessionId: 's1',
+    messages: [],
+  }, () => (async function* () {
+    const during = await tools.get('model_orchestrator').execute({ action: 'status' })
+    seenDuring = during.concurrency?.total ?? null
+    yield { type: 'text-delta', text: 'ok' }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })())
+  for await (const _chunk of probe) { /* drain */ }
+  checkThat('the open call is visible while it streams', seenDuring === 1, String(seenDuring))
+  const afterStream = await tools.get('model_orchestrator').execute({ action: 'status' })
+  checkThat('the lease is released when the stream ends', (afterStream.concurrency?.total ?? -1) === 0,
+    String(afterStream.concurrency?.total))
+  checkThat('status exposes the concurrency view', afterStream.concurrency !== undefined
+    && Array.isArray(afterStream.concurrency.routes))
+}
+
 console.log('\n[4c] turn end restores a displaced picker choice')
 // The user picks a different model mid-turn (preference is exhausted and the
 // router fell back). The turn boundary is the safe point to honour it.

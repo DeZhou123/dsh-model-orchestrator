@@ -19,8 +19,9 @@ import { createDataset, familyFor, familyResolutionFor, familyInfo, reportLaneTt
 import { createHealth, KIND } from '../src/health.js'
 import { createCatalog, laneMultiplier, laneIsFree } from '../src/catalog.js'
 import { createChannelData, packDayKey } from '../src/channels.js'
-import { chooseEffort, evaluate, latencyFor, rankGroups, readNeeds, resolvePreferenceGroup, selectRoute } from '../src/router.js'
+import { chooseEffort, evaluate, latencyFor, rankGroups, rankLanes, readNeeds, resolvePreferenceGroup, selectRoute } from '../src/router.js'
 import { resolveConfig, sanitizePatch } from '../src/config.js'
+import { createInflight } from '../src/inflight.js'
 import { datasetFromReport } from '../src/report-import.js'
 import { DEFAULT_CONFIG } from '../src/policy-defaults.js'
 import { foldCandidates, foldKey, NON_INTERACTIVE_SUFFIX } from '../src/families.js'
@@ -764,5 +765,136 @@ console.log('\n[12] report import')
   merged.clearImport()
 }
 
+
+console.log('\n[13] concurrency spreading')
+{
+  // Two lanes of the SAME model with identical everything: the only thing that
+  // can separate them is live load, which is exactly what this feature adds.
+  const rows = [
+    lane('buddy', 'glm-5.3', { quality: 0.9 }),
+    lane('raccoon', 'glm-5.3', { quality: 0.9 }),
+  ]
+  const config = resolveConfig({}, {})
+  const needs = readNeeds({ lastUserText: 'hello' }, config)
+  const health = createHealth({ userDir: null, clock })
+
+  const idle = createInflight({ clock })
+  const baseline = selectRoute({ rows, health, config, anchor: null, needs, mode: 'auto', inflight: idle })
+  checkThat('with nothing in flight the router picks a lane', baseline !== null)
+
+  // Session A is already streaming on buddy. Session B must now prefer raccoon:
+  // the two lanes are identical in every historical reading.
+  const busy = createInflight({ clock })
+  const leaseA = busy.begin('buddy', 'glm-5.3')
+  const spread = selectRoute({ rows, health, config, anchor: null, needs, mode: 'auto', inflight: busy })
+  check('a second session avoids the busy lane', spread?.provider, 'raccoon')
+  // The chosen lane is idle; the busy one is the lane that must show the load.
+  const busyLane = rankLanes({ rows, health, config, anchor: null, needs, mode: 'auto', inflight: busy }, 'glm-5-3')
+    .find(entry => entry.provider === 'buddy')
+  const idleLane = rankLanes({ rows, health, config, anchor: null, needs, mode: 'auto', inflight: busy }, 'glm-5-3')
+    .find(entry => entry.provider === 'raccoon')
+  checkThat('the busy lane scores below the idle twin',
+    busyLane.utility < idleLane.utility,
+    String(busyLane.utility) + ' vs ' + String(idleLane.utility))
+
+  // Both lanes busy: the penalty must not become an eligibility gate — a lane
+  // that is never chosen can never prove it recovered.
+  const leaseB = busy.begin('raccoon', 'glm-5.3')
+  const both = selectRoute({ rows, health, config, anchor: null, needs, mode: 'auto', inflight: busy })
+  checkThat('two busy lanes still route somewhere', both !== null && both.provider !== undefined)
+
+  leaseA.release()
+  leaseA.release()
+  checkThat('a lease release is idempotent', busy.of('buddy', 'glm-5.3') === 0)
+  leaseB.release()
+  checkThat('the registry drains to zero', busy.total() === 0, String(busy.total()))
+
+  // A stream that never closed must not penalize the lane forever.
+  let t = NOW
+  const leaky = createInflight({ clock: () => t, staleMs: 60_000 })
+  leaky.begin('buddy', 'glm-5.3')
+  checkThat('an open call counts while it is fresh', leaky.of('buddy', 'glm-5.3') === 1)
+  t = NOW + 120_000
+  checkThat('a stale lease stops counting', leaky.of('buddy', 'glm-5.3') === 0)
+
+  // Lane-level pressure: a provider's allowance is one pool, so its other
+  // models are busy too.
+  const laneLoad = createInflight({ clock })
+  laneLoad.begin('buddy', 'step-5-preview')
+  const siblingPressure = laneLoad.pressure('buddy', 'glm-5.3')
+  check('a sibling model sees the provider load', [siblingPressure.route, siblingPressure.lane], [0, 1])
+  const siblingDecision = selectRoute({
+    rows, health, config, anchor: null, needs, mode: 'auto', inflight: laneLoad,
+  })
+  check('a sibling model on a busy provider is routed around', siblingDecision?.provider, 'raccoon')
+
+  // The switch is real: turning the feature off restores history-only ranking.
+  const off = resolveConfig({}, { spreadConcurrency: false })
+  const flat = selectRoute({ rows, health, config: off, anchor: null, needs, mode: 'auto', inflight: busy })
+  checkThat('spreadConcurrency=false disables the penalty', flat?.parts?.concurrent === 0, String(flat?.parts?.concurrent))
+}
+
+console.log('\n[14] failure-burst deduplication')
+{
+  const policy = { failureBurstWindowMs: 5_000 }
+  let t = NOW
+  const health = createHealth({ userDir: null, clock: () => t, requestPolicy: () => policy })
+  const first = health.markFailure('buddy', 'glm-5.3', { code: 'RATE_LIMIT', status: 429 })
+  const strikesAfterFirst = health.stateOf('buddy', 'glm-5.3').strikes
+  // Four concurrent sessions report the same wall 1 s later.
+  t = NOW + 1_000
+  const second = health.markFailure('buddy', 'glm-5.3', { code: 'RATE_LIMIT', status: 429 })
+  const third = health.markFailure('buddy', 'glm-5.3', { code: 'RATE_LIMIT', status: 429 })
+  checkThat('the first failure of a burst strikes', first.burst !== true && strikesAfterFirst === 1, String(strikesAfterFirst))
+  checkThat('concurrent reports of the same wall do not strike again',
+    second.burst === true && third.burst === true)
+  checkThat('the strike count stays at one', health.stateOf('buddy', 'glm-5.3').strikes === 1,
+    String(health.stateOf('buddy', 'glm-5.3').strikes))
+
+  // The cooldown must not slide forward on every report of the same event.
+  // A burst report returns the *remaining* time (what the caller should tell a
+  // user), which can only shrink as the clock advances — never grow.
+  const firstUntil = first.cooldownMs
+  checkThat('the cooldown is not extended by the burst',
+    second.cooldownMs <= firstUntil && third.cooldownMs <= second.cooldownMs,
+    [firstUntil, second.cooldownMs, third.cooldownMs].join(','))
+
+  // Outside the window it is a new event and earns its own strike.
+  t = NOW + 60_000
+  const later = health.markFailure('buddy', 'glm-5.3', { code: 'RATE_LIMIT', status: 429 })
+  checkThat('a failure after the window strikes again', later.burst !== true
+    && health.stateOf('buddy', 'glm-5.3').strikes === 2,
+    String(health.stateOf('buddy', 'glm-5.3').strikes))
+
+  // A different kind on the same route is real news.
+  let t2 = NOW
+  const mixed = createHealth({ userDir: null, clock: () => t2, requestPolicy: () => policy })
+  mixed.markFailure('buddy', 'glm-5.3', { code: 'RATE_LIMIT', status: 429 })
+  t2 = NOW + 500
+  const authAfterRate = mixed.markFailure('buddy', 'glm-5.3', { code: 'AUTH', status: 401 })
+  checkThat('a different failure kind is not deduplicated', authAfterRate.burst !== true)
+
+  // A success clears the marker, so the next failure is fresh.
+  let t3 = NOW
+  const recovered = createHealth({ userDir: null, clock: () => t3, requestPolicy: () => policy })
+  recovered.markFailure('buddy', 'glm-5.3', { code: 'RATE_LIMIT', status: 429 })
+  t3 = NOW + 500
+  recovered.markSuccess('buddy', 'glm-5.3', { ttftMs: 800 })
+  const afterOk = recovered.markFailure('buddy', 'glm-5.3', { code: 'RATE_LIMIT', status: 429 })
+  checkThat('a served call resets the burst marker', afterOk.burst !== true)
+
+  // Five concurrent 429s must not reach the exponential ceiling the way five
+  // separate strikes did (60 s -> 120 -> 240 -> 480 -> 960 s measured).
+  let t4 = NOW
+  const burst = createHealth({ userDir: null, clock: () => t4, requestPolicy: () => policy })
+  const cooldowns = []
+  for (let index = 0; index < 5; index += 1) {
+    t4 = NOW + index * 500
+    cooldowns.push(burst.markFailure('buddy', 'glm-5.3', { code: 'RATE_LIMIT', status: 429 }).cooldownMs)
+  }
+  checkThat('five parallel 429s never escalate the backoff',
+    cooldowns.every(value => value <= cooldowns[0]),
+    cooldowns.join(','))
+}
 console.log('\n' + (failures === 0 ? 'PASS' : 'FAIL') + ' — ' + (checks - failures) + '/' + checks)
 if (failures > 0) process.exitCode = 1

@@ -25,6 +25,7 @@ export const MUTABLE_KEYS = [
   'requestRepeatThreshold', 'requestRepeatWindowMs', 'requestRepeatBlockMs',
   'turnTokenBudget', 'longContextThreshold', 'latencyGateMs', 'cacheSwitchPenalty',
   'cacheAffinityTokens', 'anchorBonus', 'switchMargin', 'laneSwitchMargin', 'userChoiceTtlMs',
+  'spreadConcurrency', 'concurrencySoftCap', 'concurrencyWeight', 'concurrencyStaleMs', 'failureBurstWindowMs',
   'routeSubagents', 'adoptUserSelection', 'routeFirstTurn', 'autoSelect', 'reasoningEffort', 'catalogRefreshMs',
   'channelDataRefreshMs', 'modelInfoTtlMs', 'catalogTimeoutMs', 'usageUnitTokens',
   'channelData', 'freeModelData',
@@ -96,6 +97,15 @@ export function resolveConfig(raw, overrides) {
     anchorBonus: clamp(pick(merged, DEFAULT_CONFIG, 'anchorBonus', isNumber), 0, 0.2),
     switchMargin: clamp(pick(merged, DEFAULT_CONFIG, 'switchMargin', isNumber), 0, 0.5),
     laneSwitchMargin: clamp(pick(merged, DEFAULT_CONFIG, 'laneSwitchMargin', isNumber), 0, 0.5),
+    // Concurrency spreading (see CONCURRENCY in policy-defaults). The weight is
+    // capped at 0.3: above that the penalty starts outweighing the strategy
+    // weights it is supposed to break ties between, and a single open call would
+    // be able to hide a genuinely better model.
+    spreadConcurrency: pick(merged, DEFAULT_CONFIG, 'spreadConcurrency', isBool),
+    concurrencySoftCap: clamp(Math.round(pick(merged, DEFAULT_CONFIG, 'concurrencySoftCap', isNumber)), 1, 16),
+    concurrencyWeight: clamp(pick(merged, DEFAULT_CONFIG, 'concurrencyWeight', isNumber), 0, 0.3),
+    failureBurstWindowMs: clamp(Math.round(pick(merged, DEFAULT_CONFIG, 'failureBurstWindowMs', isNumber)), 0, 60_000),
+    concurrencyStaleMs: clamp(Math.round(pick(merged, DEFAULT_CONFIG, 'concurrencyStaleMs', isNumber)), 60_000, 60 * 60_000),
     userChoiceTtlMs: Math.max(0, pick(merged, DEFAULT_CONFIG, 'userChoiceTtlMs', isNumber)),
     routeSubagents: pick(merged, DEFAULT_CONFIG, 'routeSubagents', isBool),
     adoptUserSelection: pick(merged, DEFAULT_CONFIG, 'adoptUserSelection', isBool),

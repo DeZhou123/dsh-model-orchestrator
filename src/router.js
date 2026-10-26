@@ -46,6 +46,39 @@ const VISION_FALLBACK_PENALTY = 0.25
 /** Deduction while a cooling lane is still allowed (proactiveSwitch=false). */
 const COOLING_PENALTY = 0.5
 
+/**
+ * Concurrency pressure: how busy one route is right now, as a 0..1 reading.
+ *
+ * The five readouts are all history. History cannot tell "two sessions at once"
+ * from "one session asking twice", so N concurrent sessions all rank the same
+ * lane first and stack onto it — splitting one per-key quota N ways and then
+ * collecting a 429 burst whose cooldown is channel-scoped (LOCAL PATCH
+ * 2026-10-26). This term is the only *live* input in the score.
+ *
+ * Both readings matter and they are not the same:
+ *
+ *   route — calls open on this exact `provider/model`; a second session on the
+ *           same route gets nothing extra (the quota is already committed).
+ *   lane  — calls open anywhere on the provider; a provider's allowance is
+ *           usually one pool, so its other models are busy too.
+ *
+ * The route reading is weighted higher because it is the exact resource being
+ * contended; the lane reading catches the shared-allowance case.
+ */
+function concurrencyPenalty(pressure, config) {
+  if (config?.spreadConcurrency === false) return 0
+  const route = Number(pressure?.route ?? 0)
+  const lane = Number(pressure?.lane ?? 0)
+  if (!(route > 0) && !(lane > 0)) return 0
+  const cap = Math.max(1, Number(config?.concurrencySoftCap ?? 2))
+  const weight = Math.max(0, Math.min(0.3, Number(config?.concurrencyWeight ?? 0.18)))
+  // Saturation is per reading, then folded: the route count counts double
+  // because it is the exact contended resource.
+  const routeLoad = Math.min(1, route / cap)
+  const laneLoad = Math.min(1, Math.max(0, lane - route) / cap)
+  return weight * Math.min(1, routeLoad + 0.5 * laneLoad)
+}
+
 /** Max deduction for a lane whose recent calls failed often. */
 const ERROR_RATE_PENALTY = 0.2
 
@@ -255,7 +288,7 @@ export function inspectLane(row, input) {
  *
  * @returns {{utility: number, parts: object}}
  */
-export function scoreLane(row, needs, strategy, health, current, config, now = Date.now()) {
+export function scoreLane(row, needs, strategy, health, current, config, now = Date.now(), inflight = null) {
   const weights = STRATEGIES[strategy] ?? STRATEGIES.balanced
   const state = health.stateOf(row.provider, row.model)
   const latency = latencyFor(row, health, now)
@@ -294,6 +327,13 @@ export function scoreLane(row, needs, strategy, health, current, config, now = D
     : Number(config.cacheSwitchPenalty ?? DEFAULT_CONFIG.cacheSwitchPenalty)
       * Math.min(1, cacheTokens / Math.max(1, Number(config.cacheAffinityTokens ?? DEFAULT_CONFIG.cacheAffinityTokens)))
 
+  // Live concurrency pressure (see concurrencyPenalty): the only input that
+  // describes the present rather than the past.
+  const pressure = inflight === null || typeof inflight?.pressure !== 'function'
+    ? null
+    : inflight.pressure(row.provider, row.model)
+  const concurrent = concurrencyPenalty(pressure, config)
+
   const penalty = tagPenalty(row.tags ?? [])
   const fallbackPenalty = needs.vision && row.vision !== true ? VISION_FALLBACK_PENALTY : 0
   const coolingPenalty = state.available === false ? COOLING_PENALTY : 0
@@ -327,6 +367,7 @@ export function scoreLane(row, needs, strategy, health, current, config, now = D
     - coolingPenalty
     - errorPenalty
     - windowRisk
+    - concurrent
   const utility = baseUtility + anchor
 
   return {
@@ -349,6 +390,9 @@ export function scoreLane(row, needs, strategy, health, current, config, now = D
       penalty: round(penalty),
       errorRate: round(errorRate),
       windowRisk: round(windowRisk),
+      concurrent: round(concurrent),
+      inFlight: pressure === null ? null : pressure.route,
+      laneInFlight: pressure === null ? null : pressure.lane,
       cooling: state.available === false,
       visionFallback: fallbackPenalty > 0,
     },
@@ -387,10 +431,11 @@ export function evaluate(input) {
   }
 
   const current = input.anchor ?? null
+  const inflight = input.inflight ?? null
   const lanes = []
   for (const entry of all) {
     if (!entry.inspection.eligible) continue
-    const scored = scoreLane(entry.row, needs, strategy, health, current, config, now)
+    const scored = scoreLane(entry.row, needs, strategy, health, current, config, now, inflight)
     lanes.push({
       row: entry.row,
       utility: scored.utility,
@@ -851,7 +896,7 @@ export function rankLanes(input, key) {
     cooling: entry.inspection.cooling === true,
     cooldownMs: Math.max(0, Number(entry.inspection.until ?? 0) - evaluation.now),
     utility: entry.inspection.eligible
-      ? round(scoreLane(entry.row, evaluation.needs, evaluation.strategy, input.health, input.anchor ?? null, input.config, evaluation.now).utility)
+      ? round(scoreLane(entry.row, evaluation.needs, evaluation.strategy, input.health, input.anchor ?? null, input.config, evaluation.now, input.inflight ?? null).utility)
       : null,
     ttftMs: latencyFor(entry.row, input.health, evaluation.now).ms,
     latencySource: latencyFor(entry.row, input.health, evaluation.now).source,

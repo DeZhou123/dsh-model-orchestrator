@@ -36,6 +36,7 @@ import { createHealth, KIND } from './src/health.js'
 import { createCatalog } from './src/catalog.js'
 import { createChannelData } from './src/channels.js'
 import { createObserver } from './src/observe.js'
+import { createInflight } from './src/inflight.js'
 import {
   evaluate, rankGroups, rankLanes, readNeeds, resolvePreferenceGroup, selectRoute,
 } from './src/router.js'
@@ -51,7 +52,7 @@ export const name = 'model-orchestrator'
 /** `llm` is what the plugin exists for. The rest degrades feature by feature. */
 export const inject = ['llm']
 
-export const version = '2.0.0'
+export const version = '2.5.0'
 
 /** The DSH home, resolved the same way the rest of the profile resolves it. */
 function resolveHome() {
@@ -154,8 +155,18 @@ export function apply(ctx, rawConfig = {}) {
   let sessionController = null
   let desktopRuntime = null
 
+  /**
+   * Live open-call accounting, shared by every session in this process.
+   *
+   * It has to be process-wide, not per-session: the whole point is that two
+   * sessions see each other's load. See `src/inflight.js` and CONCURRENCY in
+   * `src/policy-defaults.js`.
+   */
+  const inflight = createInflight({ staleMs: Number(runtime.config.concurrencyStaleMs ?? 0) || undefined })
+
   const observer = createObserver({
     health,
+    inflight,
     onSample: (sample) => {
       const state = sample.sessionId === undefined ? undefined : sessions.get(sample.sessionId)
       if (state === undefined) return
@@ -585,6 +596,9 @@ export function apply(ctx, rawConfig = {}) {
     return {
       rows: catalog.current.rows,
       health,
+      // Live open-call counts, so concurrent sessions spread instead of
+      // stacking on the single best-looking lane (LOCAL PATCH 2026-10-26).
+      inflight,
       dataset,
       config,
       anchor,
@@ -1152,6 +1166,9 @@ export function apply(ctx, rawConfig = {}) {
       key: row?.key ?? foldKey(familyFor(dataset, route.model)),
       effort: route.reasoningEffort ?? null,
       health: healthState,
+      // Live load on this exact route, so the panel can explain a switch that
+      // the historical readings would not predict.
+      inFlight: inflight.of(route.provider, route.model),
       tokensToday: spend.in + spend.out,
       requests: state?.requests ?? 0,
       switches: state?.switches ?? 0,
@@ -1176,7 +1193,7 @@ export function apply(ctx, rawConfig = {}) {
     const config = runtime.config
     const mode = effectiveMode(state ?? null)
     const input = state === undefined
-      ? { rows: catalog.current.rows, health, config, anchor: null, needs: readNeeds({}, config) }
+      ? { rows: catalog.current.rows, health, inflight, config, anchor: null, needs: readNeeds({}, config) }
       : selectionInput(state)
     let group = null
     try {
@@ -1231,7 +1248,7 @@ export function apply(ctx, rawConfig = {}) {
   function viewFor(state) {
     const config = publicConfig()
     const input = state === undefined
-      ? { rows: catalog.current.rows, health, config, anchor: null, needs: readNeeds({}, config) }
+      ? { rows: catalog.current.rows, health, inflight, config, anchor: null, needs: readNeeds({}, config) }
       : selectionInput(state)
     const current = currentOf(state)
     const groups = rankGroups(input)
@@ -1326,6 +1343,7 @@ export function apply(ctx, rawConfig = {}) {
         lanes: view.lanes,
         dataset: datasetView(),
         decisions: health.snapshot().decisions.slice(0, 20),
+        concurrency: inflight.snapshot(),
       }
     },
 
@@ -1413,6 +1431,10 @@ export function apply(ctx, rawConfig = {}) {
         },
         decisions: snapshot.decisions.slice(0, 40),
         dataset: datasetView(),
+        // Live open calls per route and per lane. The panel shows this next to
+        // the health ledger so "why did it pick the second-best lane" has a
+        // visible answer: the first one was already busy.
+        concurrency: inflight.snapshot(),
         lanesHealth: snapshot.lanes,
         modelsHealth: snapshot.models.slice(0, 40),
         strategies: ['quality', 'balanced', 'economy', 'speed'],

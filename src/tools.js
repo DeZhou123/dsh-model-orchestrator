@@ -225,6 +225,12 @@ export function renderCommand(value) {
       lines.push('打分：质量 ' + decision.parts.quality + ' · 速度 ' + decision.parts.speed
         + ' · 健康 ' + decision.parts.health + ' · 成本 ' + decision.parts.cost
         + ' · 用量 ' + decision.parts.usage + ' · 首字 ' + (decision.parts.ttftMs ?? '?') + 'ms(' + decision.parts.latencySource + ')')
+      // Live load is the only non-historical reading; show it only when it
+      // actually influenced the score, so an idle machine stays quiet.
+      if (Number(decision.parts.concurrent ?? 0) > 0) {
+        lines.push('并发：本路由 ' + (decision.parts.inFlight ?? 0) + ' 个在飞 · 同渠道 '
+          + (decision.parts.laneInFlight ?? 0) + ' 个在飞 · 扣 ' + decision.parts.concurrent)
+      }
     }
     if ((decision.alternatives ?? []).length > 0) {
       lines.push('', '备选模型组：')
@@ -255,6 +261,7 @@ export function renderCommand(value) {
         }
       }
       if (current.tokensToday !== undefined) lines.push('今日 token：' + current.tokensToday)
+      if (Number(current.inFlight ?? 0) > 0) lines.push('正在飞：' + current.inFlight + ' 个调用')
       if (current.reason !== undefined) lines.push('选择原因：' + current.reason)
       if (current.switches !== undefined) lines.push('本会话已自动切换：' + current.switches + ' 次')
     }

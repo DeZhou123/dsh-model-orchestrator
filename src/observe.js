@@ -38,10 +38,20 @@ function isFirstFrame(chunk) {
 /**
  * Create the observer.
  *
- * @param {{health: object, onFailure?: Function, onSample?: Function, clock?: () => number}} options
+ * @param {{health: object, inflight?: object, onFailure?: Function, onSample?: Function, clock?: () => number}} options
  */
 export function createObserver(options) {
   const { health } = options
+  /**
+   * Optional open-call accounting (see `src/inflight.js`).
+   *
+   * `llm/stream` is the one point every model call passes through, so it is also
+   * the only honest place to know a call is *currently* open. The lease is taken
+   * before the first chunk and released in `finally` — a stream that throws, ends
+   * or is cancelled must all free the slot, or a crashed turn would make its lane
+   * look permanently busy to every other session.
+   */
+  const inflight = options.inflight ?? null
   const clock = options.clock ?? (() => Date.now())
 
   /**
@@ -57,6 +67,9 @@ export function createObserver(options) {
     // carry a purpose. A hand-built probe may carry neither.
     const agentLoopCall = callOptions?.sessionId !== undefined && callOptions?.purpose === undefined
     const started = clock()
+    const lease = inflight === null || typeof inflight.begin !== 'function'
+      ? null
+      : inflight.begin(provider, model)
     let firstFrameAt = null
     let firstVisibleAt = null
     let usage = null
@@ -82,6 +95,10 @@ export function createObserver(options) {
         /* observation must never break the call */
       }
       throw error
+    } finally {
+      // Every exit path frees the slot: a completed stream, a thrown error, a
+      // consumer that broke out of the loop, or an aborted signal.
+      lease?.release()
     }
 
     const endedAt = clock()

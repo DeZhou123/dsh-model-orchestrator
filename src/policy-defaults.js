@@ -128,6 +128,64 @@ export const REQUEST_REPEAT = {
 }
 
 /**
+ * Concurrency spreading (LOCAL PATCH 2026-10-26).
+ *
+ * ## The defect this fixes
+ *
+ * The ledger scores lanes from history only, so N sessions open at the same
+ * moment all rank the same lane first and stack onto it. A free channel's
+ * allowance is per key (often per IP), so stacking does not go faster: it splits
+ * one quota N ways and then collects a 429 burst whose cooldown is
+ * channel-scoped — one session's rate limit stops every other session on that
+ * lane for minutes.
+ *
+ * Measured consequence of NOT modelling it (2026-10-26, 5 concurrent sessions on
+ * one free lane): the second 429 of a burst escalated the cooldown from 60 s to
+ * 16 min, because each concurrent failure added its own strike to the same
+ * route record.
+ *
+ * ## What the two knobs mean
+ *
+ * - `softCap` — open calls at which the penalty reaches full weight. 2 means "a
+ *   lane already serving one call is worth noticeably less to a second
+ *   session", which is exactly the fan-out point.
+ * - `weight` — the maximum deduction. It must exceed `laneSwitchMargin` (0.05)
+ *   and `anchorBonus` (0.04) or the router would keep a lane it has just been
+ *   told is busy; 0.18 clears both with margin while staying below one full
+ *   quality point (`0.46` in balanced), so a genuinely better model still wins.
+ *
+ * Both are bounded and restated as penalties, not weights: the five readouts
+ * still sum to 1, so an existing ranking stays auditable.
+ */
+export const CONCURRENCY = {
+  enabled: true,
+  /** Open calls (on the route or its provider) at which the penalty is full. */
+  softCap: 2,
+  /** Maximum utility deduction for a saturated lane. */
+  weight: 0.18,
+  /** A lease older than this stops counting (a stream that never closed). */
+  staleMs: 15 * 60_000,
+}
+
+/**
+ * Failure-burst deduplication (LOCAL PATCH 2026-10-26).
+ *
+ * Concurrent sessions that hit the *same* wall report it one failure each, and
+ * every one of those failures used to add a strike — so five parallel 429s on
+ * one lane produced five strikes and an exponential cooldown (20 s → 300 s cap)
+ * from what was a single upstream event.
+ *
+ * Rule: a failure of the same kind, on the same route, inside this window is
+ * counted once for striking purposes. The cooldown is *not* extended either —
+ * it is the same wall, and sliding the deadline forward on every retry is how a
+ * burst turns into a park.
+ */
+export const FAILURE_BURST = {
+  /** Same-kind failures on one route closer than this are one event. */
+  windowMs: 5_000,
+}
+
+/**
  * Half-life of a recorded failure, in milliseconds.
  *
  * A strike used to be permanent until the same route succeeded again — and a
@@ -241,6 +299,19 @@ export const DEFAULT_CONFIG = {
   switchMargin: 0.04,
   /** Utility gain required before the router leaves a healthy lane. */
   laneSwitchMargin: 0.05,
+  /**
+   * Spread concurrent sessions across lanes instead of stacking them on one
+   * (see CONCURRENCY). Off restores pure history-based ranking.
+   */
+  spreadConcurrency: true,
+  /** Open calls at which the concurrency penalty is full. */
+  concurrencySoftCap: CONCURRENCY.softCap,
+  /** Maximum utility deduction for a saturated lane. */
+  concurrencyWeight: CONCURRENCY.weight,
+  /** An in-flight lease older than this stops counting (a stream that never closed). */
+  concurrencyStaleMs: CONCURRENCY.staleMs,
+  /** Same-kind failures on one route inside this window count as one event. */
+  failureBurstWindowMs: FAILURE_BURST.windowMs,
   /** How long an explicit picker change is respected in auto mode. */
   userChoiceTtlMs: 30 * 60_000,
   /** Route subagent sessions too (off: their own model choice wins). */

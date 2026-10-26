@@ -15,7 +15,7 @@
 
 import path from 'node:path'
 import fs from 'node:fs'
-import { COOLDOWN, REQUEST_REPEAT, STRIKE_HALF_LIFE_MS, TOKEN_WINDOWS } from './policy-defaults.js'
+import { COOLDOWN, FAILURE_BURST, REQUEST_REPEAT, STRIKE_HALF_LIFE_MS, TOKEN_WINDOWS } from './policy-defaults.js'
 import { writeJsonAtomic } from './dataset.js'
 
 /** Failure kinds the router reasons about. */
@@ -456,6 +456,10 @@ export function createHealth(options = {}) {
         // Consecutive request-side rejections (see markFailure / REQUEST_REPEAT).
         rejects: 0,
         rejectsAt: 0,
+        // Last failure kind and when it arrived, for burst deduplication: five
+        // concurrent sessions hitting one wall must not strike five times.
+        lastKind: '',
+        lastKindAt: 0,
         counters: emptyCounters(),
       }
       models.set(key, record)
@@ -602,13 +606,43 @@ export function createHealth(options = {}) {
       return { ...verdict, lane: String(provider), model: String(model), ...meta }
     }
 
-    record.strikes += 1
-    record.strikesAt = now
+    // ── failure-burst deduplication (LOCAL PATCH 2026-10-26) ────────────────
+    //
+    // Concurrent sessions that hit the same wall report one failure each. Every
+    // one of them used to add a strike, so five parallel 429s on one lane made
+    // five strikes and an exponential cooldown (20 s → 300 s) out of a single
+    // upstream event — measured 2026-10-26: the second failure of a burst took
+    // the cooldown from 60 s to 16 min.
+    //
+    // The rule is deliberately narrow: same *kind*, same route, inside
+    // failureBurstWindowMs. A different kind on the same route is real news
+    // (429 then 401 means the key died mid-burst), and the same kind on another
+    // route is another lane's problem.
+    const burstWindowMs = Math.max(0, Number(requestPolicy().failureBurstWindowMs ?? FAILURE_BURST.windowMs))
+    const burst = burstWindowMs > 0
+      && record.lastKind === verdict.kind
+      && record.lastKindAt > 0
+      && now - record.lastKindAt <= burstWindowMs
+    record.lastKind = verdict.kind
+    record.lastKindAt = now
     record.lastAt = now
     record.counters.errors += 1
     record.status = verdict.kind
     record.reason = verdict.reason
-    record.until = verdict.cooldownMs > 0 ? now + verdict.cooldownMs : 0
+
+    if (burst) {
+      // Same event, reported twice. Neither the strike nor the deadline may
+      // move: the classifier derives its backoff from the strike count, so a
+      // burst report would otherwise *escalate* the very cooldown the
+      // deduplication exists to protect (measured: 20 s → 40 s on the second
+      // report of one wall). The first verdict already booked the deadline, and
+      // a live cooldown must never be shortened by a later, milder report
+      // either — so it is simply left alone.
+    } else {
+      record.strikes += 1
+      record.strikesAt = now
+      record.until = verdict.cooldownMs > 0 ? now + verdict.cooldownMs : 0
+    }
 
     const bucket = bucketFor(provider, model)
     bucket.errors += 1
@@ -617,7 +651,7 @@ export function createHealth(options = {}) {
       lane.status = verdict.kind
       lane.reason = verdict.reason
       lane.until = Math.max(lane.until, record.until)
-      lane.strikes += 1
+      if (!burst) lane.strikes += 1
       lane.lastAt = now
       // A lane-wide verdict applies to every model the lane advertises.
       for (const sibling of models.values()) {
@@ -631,7 +665,12 @@ export function createHealth(options = {}) {
     }
 
     dirty = true
-    return { ...verdict, lane: String(provider), model: String(model), ...meta }
+    // The returned cooldown must be the one that is actually in effect. On a
+    // burst report the classifier's fresh backoff (derived from the now-higher
+    // strike count) is a number nobody is waiting for; reporting it would tell
+    // the caller to wait longer than the ledger does.
+    const effectiveCooldown = burst ? Math.max(0, Number(record.until ?? 0) - now) : verdict.cooldownMs
+    return { ...verdict, cooldownMs: effectiveCooldown, burst, lane: String(provider), model: String(model), ...meta }
   }
 
   /** Record one successful call: latency, throughput, tokens, and recovery. */
@@ -650,6 +689,10 @@ export function createHealth(options = {}) {
     // objecting to, it is not objecting now.
     record.rejects = 0
     record.rejectsAt = 0
+    // And it ends a failure burst: the next failure is a fresh event and must
+    // earn its own strike (see markFailure's burst deduplication).
+    record.lastKind = ''
+    record.lastKindAt = 0
     // A success forgives part of the decayed history rather than one whole
     // strike: with a half-life in play, "minus one" is meaningless at 0.3.
     decayStrikes(record, now)
