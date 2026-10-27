@@ -15,6 +15,7 @@ const isBool = value => typeof value === 'boolean'
 const isString = value => typeof value === 'string'
 const isNumber = value => typeof value === 'number' && Number.isFinite(value)
 const isStringArray = value => Array.isArray(value) && value.every(entry => typeof entry === 'string')
+const isPlainObject = value => typeof value === 'object' && value !== null && !Array.isArray(value)
 const oneOf = (...allowed) => value => typeof value === 'string' && allowed.includes(value)
 
 /** Keys the panel, the tool, and the command are allowed to change. */
@@ -28,8 +29,44 @@ export const MUTABLE_KEYS = [
   'spreadConcurrency', 'concurrencySoftCap', 'concurrencyWeight', 'concurrencyStaleMs', 'failureBurstWindowMs',
   'routeSubagents', 'adoptUserSelection', 'routeFirstTurn', 'autoSelect', 'reasoningEffort', 'catalogRefreshMs',
   'channelDataRefreshMs', 'modelInfoTtlMs', 'catalogTimeoutMs', 'usageUnitTokens',
-  'channelData', 'freeModelData',
+  'channelData', 'freeModelData', 'laneGuard', 'duoPeers',
 ]
+
+/**
+ * Coerce the lane guard block, keeping every default the caller left out.
+ *
+ * Written field by field rather than spread over the defaults: a patch that says
+ * only `enabled: true` must inherit the default `laneId` and `enforce`, and a
+ * patch that says `laneId: z` must not silently become a guard that blocks
+ * nothing without saying so — an unknown lane falls back to the default and the
+ * reason shows up in the audit.
+ */
+function resolveLaneGuard(raw) {
+  const defaults = DEFAULT_CONFIG.laneGuard
+  const value = isPlainObject(raw) ? raw : {}
+  const laneId = String(value.laneId ?? defaults.laneId).trim().toLowerCase()
+  return {
+    enabled: isBool(value.enabled) ? value.enabled : defaults.enabled,
+    laneId: laneId === 'a' || laneId === 'b' ? laneId : defaults.laneId,
+    policyPath: isString(value.policyPath) ? value.policyPath.trim() : defaults.policyPath,
+    enforce: isBool(value.enforce) ? value.enforce : defaults.enforce,
+  }
+}
+
+/** Coerce the peer list: entries without any readable path are dropped. */
+function resolveDuoPeers(raw) {
+  const list = Array.isArray(raw) ? raw : []
+  const out = []
+  for (const entry of list) {
+    if (!isPlainObject(entry)) continue
+    const label = isString(entry.label) ? entry.label.trim() : ''
+    const healthPath = isString(entry.healthPath) ? entry.healthPath.trim() : ''
+    const patchPath = isString(entry.patchPath) ? entry.patchPath.trim() : ''
+    if (healthPath === '' && patchPath === '') continue
+    out.push({ label: label === '' ? 'peer' : label, healthPath, patchPath })
+  }
+  return out
+}
 
 /** Modes the router understands. */
 export const MODES = ['auto', 'prefer', 'manual', 'off']
@@ -120,6 +157,8 @@ export function resolveConfig(raw, overrides) {
     decisionLogSize: clamp(Math.round(pick(merged, DEFAULT_CONFIG, 'decisionLogSize', isNumber)), 10, 500),
     channelData: pick(merged, DEFAULT_CONFIG, 'channelData', isBool),
     freeModelData: pick(merged, DEFAULT_CONFIG, 'freeModelData', isBool),
+    laneGuard: resolveLaneGuard(pick(merged, DEFAULT_CONFIG, 'laneGuard', isPlainObject)),
+    duoPeers: resolveDuoPeers(pick(merged, DEFAULT_CONFIG, 'duoPeers', Array.isArray)),
     channelPackDir: pick(merged, DEFAULT_CONFIG, 'channelPackDir', isString),
     freeModelDir: pick(merged, DEFAULT_CONFIG, 'freeModelDir', isString),
     usageUnitTokens: Math.max(10_000, pick(merged, DEFAULT_CONFIG, 'usageUnitTokens', isNumber)),

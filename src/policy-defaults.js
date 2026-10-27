@@ -275,6 +275,26 @@ export const DEFAULT_CONFIG = {
   allow: [],
   /** Provider routes to exclude. */
   denyProviders: [],
+  /**
+   * Lane isolation (2026-10-27). Off by default: with no policy path configured
+   * the guard has nothing to read, and a guard that guesses is worse than none.
+   *
+   * `laneId` says which lane this instance owns ('a' = main, 'b' = worker);
+   * `policyPath` points at `_supervisor/policy.json`; `enforce: false` keeps the
+   * audit and stops blocking, which is what you want while re-balancing lanes.
+   */
+  laneGuard: {
+    enabled: false,
+    laneId: 'b',
+    policyPath: '',
+    enforce: true,
+  },
+  /**
+   * Peers whose real running model the pairing action reads. `healthPath` is the
+   * peer's own `model-orchestrator/health.json` (what it dispatched);
+   * `patchPath` is its profile patch (what it would dispatch on boot).
+   */
+  duoPeers: [],
   /** Maximum automatic route changes inside one step before giving up. */
   maxSwitchesPerStep: 3,
   /** Maximum automatic route changes inside one turn. */

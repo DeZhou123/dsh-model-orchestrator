@@ -28,6 +28,7 @@
  */
 
 import { STRATEGIES, EFFORT_RANK, EFFORT_STRATEGY, DEFAULT_CONFIG } from './policy-defaults.js'
+import { laneVerdict } from './lanes.js'
 import { PENALTY_TAGS } from './families.js'
 
 /**
@@ -247,6 +248,17 @@ export function latencyFor(row, health, now = Date.now()) {
  */
 export function inspectLane(row, input) {
   const { needs, config, health } = input
+  // Lane isolation (2026-10-27). Checked first, because it is a policy decision
+  // rather than a measurement: a model the other instance owns must stay
+  // unavailable even while it is healthy, cheap and fast. When the policy is
+  // missing or unreadable `laneVerdict` returns `foreign: false`, so a broken
+  // policy file degrades to v2.5.0 behaviour instead of grounding every request.
+  const guard = config?.laneGuard
+  if (guard !== null && guard !== undefined && guard.enabled === true && guard.enforce !== false
+    && input.lanePolicy !== null && input.lanePolicy !== undefined) {
+    const verdict = laneVerdict(row, input.lanePolicy)
+    if (verdict.foreign) return { eligible: false, foreignLane: true, reason: '车道守卫：车道 ' + String(verdict.lane ?? '').toUpperCase() + ' 声明占用' }
+  }
   if (input.exclude?.has?.(`${row.provider}\u0000${row.model}`)) {
     return { eligible: false, reason: '本次请求刚刚失败' }
   }
@@ -413,7 +425,7 @@ export function evaluate(input) {
   const needs = input.needs ?? readNeeds({}, config)
   const strategy = strategyFor(needs, config)
   const now = input.now ?? Date.now()
-  const base = { needs, config, health, now, exclude: input.exclude, minContextWindow: input.minContextWindow }
+  const base = { needs, config, health, now, exclude: input.exclude, minContextWindow: input.minContextWindow, lanePolicy: input.lanePolicy ?? null }
 
   const inspectAll = (visionFallback) => rows.map(row => ({
     row,
