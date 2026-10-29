@@ -433,6 +433,20 @@ export function evaluate(input) {
   }))
 
   let all = inspectAll(false)
+  // ── 渠道互借：借用车道默认只在「本机全灭」时才参战 ─────────────────────────
+  // 互借的语义是兜底，不是常态：把借来的额度当成首选，等于用对侧的账号替本机烧钱，
+  // 而且一旦对侧断线，本机明明有可用车道却先撞墙。所以 exhausted 模式下先看本机：
+  // 只要本机还有任何一条合格车道，借用车道这一轮就不进入打分。
+  // `borrowed` 由目录层打在行上（provider === config.peerShare.peerProvider）。
+  const peer = config?.peerShare
+  if (peer !== null && peer !== undefined && peer.enabled === true && peer.borrowWhen !== 'always') {
+    const localAlive = all.some(entry => entry.inspection.eligible && entry.row.borrowed !== true)
+    if (localAlive) {
+      all = all.map(entry => (entry.row.borrowed === true
+        ? { row: entry.row, inspection: { eligible: false, borrowedIdle: true, reason: '互借：本机仍有可用车道，借来的额度留作兜底' } }
+        : entry))
+    }
+  }
   let visionFallback = false
   if (needs.vision) {
     const visionLane = all.some(entry => entry.inspection.eligible && entry.row.vision === true)

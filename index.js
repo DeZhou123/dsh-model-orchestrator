@@ -35,6 +35,8 @@ import { createDataset, familyFor, writeJsonAtomic } from './src/dataset.js'
 import { createHealth, KIND } from './src/health.js'
 import { createCatalog } from './src/catalog.js'
 import { createChannelData } from './src/channels.js'
+import { loadOrCreateToken, lendableRows, startPeerShareServer } from './src/peershare.js'
+import { createPeerAdapter } from './src/peershare-adapter.js'
 import { createObserver } from './src/observe.js'
 import { createInflight } from './src/inflight.js'
 import {
@@ -52,7 +54,7 @@ export const name = 'model-orchestrator'
 /** `llm` is what the plugin exists for. The rest degrades feature by feature. */
 export const inject = ['llm']
 
-export const version = '2.5.0'
+export const version = '2.6.0'
 
 /** The DSH home, resolved the same way the rest of the profile resolves it. */
 function resolveHome() {
@@ -205,6 +207,193 @@ export function apply(ctx, rawConfig = {}) {
     }
   })
 
+
+  // ── 渠道互借（2026-10-29）─────────────────────────────────────────────────
+  // 两种角色各自独立：出借方起一个本地端点把 llm.stream 借出去；借用方把对侧的
+  // 端点注册成一条普通 provider。两端都开 = both，也就是「谁的额度还够就用谁的」。
+  //
+  // 为什么用 ctx.inject 而不是直接读 ctx.llm：注册适配器要求 llm 服务在场，而这个
+  // 服务可能比本插件晚就绪；inject 会让这一段随服务出现/消失自动重挂。
+  const peerState = {
+    server: null,
+    serverInfo: null,
+    serverError: '',
+    registration: null,
+    borrower: null,
+    tokenInfo: null,
+  }
+
+  function peerConfig() {
+    return runtime.config.peerShare ?? DEFAULT_CONFIG.peerShare
+  }
+
+  /** 出借清单：本机实时目录里可借的行。 */
+  function peerLendable() {
+    const peer = peerConfig()
+    return lendableRows(catalog.current.rows, {
+      allowProviders: peer.allowProviders,
+      denyProviders: peer.denyProviders,
+    })
+  }
+
+  /** 关掉正在跑的中继（幂等）。 */
+  async function stopPeerServer() {
+    const server = peerState.server
+    peerState.server = null
+    peerState.serverInfo = null
+    if (server === null) return
+    try {
+      await server.close()
+    } catch (error) {
+      ctx.logger?.warn?.('model-orchestrator: 关闭互借中继失败 — ' + (error instanceof Error ? error.message : String(error)))
+    }
+  }
+
+  /** 按当前配置重起/关停中继。配置变了就关掉重开（host/port 只在 bind 时生效）。 */
+  async function syncPeerServer() {
+    const peer = peerConfig()
+    const wanted = peer.enabled === true && (peer.role === 'both' || peer.role === 'lend')
+    if (!wanted) {
+      await stopPeerServer()
+      return
+    }
+    if (peer.token === '') {
+      peerState.tokenInfo = loadOrCreateToken(userDir)
+      // 没配 token 时用本机生成的那把：借用方要填的就是它，面板会把路径显示出来。
+      runtime.config.peerShare = { ...peer, token: peerState.tokenInfo.token }
+    }
+    const info = peerState.serverInfo
+    const nextPort = peerConfig().port
+    if (peerState.server !== null && info !== null && info.port === nextPort && info.host === peerConfig().host) return
+    await stopPeerServer()
+    try {
+      const started = await startPeerShareServer({
+        config: () => ({
+          ...peerConfig(),
+          version,
+        }),
+        models: () => peerLendable(),
+        stream: (request) => llmStream(request),
+        selfProvider: peerConfig().peerProvider,
+        log: (message) => ctx.logger?.warn?.('model-orchestrator: ' + message),
+      })
+      peerState.server = started
+      peerState.serverInfo = { host: started.host, port: started.port }
+      peerState.serverError = ''
+      ctx.logger?.info?.('model-orchestrator: 互借出借端点已监听 ' + started.host + ':' + started.port
+        + '（可借 ' + peerLendable().length + ' 条车道）')
+    } catch (error) {
+      peerState.serverError = error instanceof Error ? error.message : String(error)
+      ctx.logger?.warn?.('model-orchestrator: 互借出借端点启动失败 — ' + peerState.serverError)
+    }
+  }
+
+  /** 出借方真正发请求的入口：本机的 llm.stream（也就是所有车道原来的走法）。 */
+  let llmStream = () => {
+    throw new Error('llm 服务尚未就绪')
+  }
+
+  /** 借用方：把对侧端点注册成一条 provider。 */
+  function syncPeerBorrower() {
+    const peer = peerConfig()
+    const wanted = peer.enabled === true && (peer.role === 'both' || peer.role === 'borrow') && peer.peerUrl !== ''
+    if (!wanted) {
+      if (peerState.registration !== null) {
+        try {
+          peerState.registration()
+        } catch {
+          /* 已经被卸载过 */
+        }
+        peerState.registration = null
+        peerState.borrower = null
+      }
+      return
+    }
+    const provider = peer.peerProvider
+    if (peerState.borrower === null) {
+      peerState.borrower = createPeerAdapter({
+        provider,
+        config: () => peerConfig(),
+        log: (message) => ctx.logger?.warn?.('model-orchestrator: ' + message),
+      })
+    }
+    if (peerState.registration !== null) {
+      try {
+        peerState.registration()
+      } catch {
+        /* 忽略 */
+      }
+      peerState.registration = null
+    }
+    try {
+      const handle = ctx.llm.registerAdapter([provider], peerState.borrower.adapter)
+      peerState.registration = () => handle()
+      ctx.logger?.info?.('model-orchestrator: 互借借用车道已注册 provider=' + provider + ' → ' + peerConfig().peerUrl)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      // 重挂同一个 provider 名会撞 DUPLICATE_ADAPTER；这里如实记下来，不假装成功。
+      ctx.logger?.warn?.('model-orchestrator: 互借借用车道注册失败 — ' + message)
+    }
+  }
+
+  ctx.inject(['llm'], (scoped) => {
+    llmStream = (request) => scoped.llm.stream(request)
+    syncPeerServer().catch(() => {})
+    syncPeerBorrower()
+    return () => {
+      llmStream = () => {
+        throw new Error('llm 服务已卸载')
+      }
+      void stopPeerServer()
+      if (peerState.registration !== null) {
+        try {
+          peerState.registration()
+        } catch {
+          /* 忽略 */
+        }
+        peerState.registration = null
+      }
+    }
+  })
+
+  /** 面板/工具读的互借状态。 */
+  function peerView() {
+    const peer = peerConfig()
+    const lendable = peerLendable()
+    const borrower = peerState.borrower
+    return {
+      enabled: peer.enabled === true,
+      role: peer.role,
+      borrowWhen: peer.borrowWhen,
+      label: peer.label,
+      server: peerState.serverInfo === null ? null : { ...peerState.serverInfo },
+      serverError: peerState.serverError,
+      token: peerState.tokenInfo === null ? null : { path: peerState.tokenInfo.path, created: peerState.tokenInfo.created },
+      lendable: {
+        count: lendable.length,
+        providers: [...new Set(lendable.map(row => row.provider))].sort(),
+        sample: lendable.slice(0, 12).map(row => row.id),
+        allowProviders: peer.allowProviders,
+        denyProviders: peer.denyProviders,
+      },
+      borrow: {
+        peerUrl: peer.peerUrl,
+        provider: peer.peerProvider,
+        registered: peerState.registration !== null,
+        models: borrower === null ? [] : borrower.models.map(row => row.id),
+        modelsAt: borrower === null ? 0 : borrower.modelsAt,
+        error: borrower === null ? '' : borrower.modelsError,
+      },
+    }
+  }
+
+  /** 设置变更后让互借跟随新配置（面板与工具都走这里）。 */
+  function applyPeerConfig() {
+    syncPeerServer().catch(() => {})
+    syncPeerBorrower()
+    refreshCatalog('peer-share').catch(() => {})
+    return peerView()
+  }
   function selectionFor(agent) {
     if (sessionController === null) return null
     if (typeof sessionController.agents?.selectionFor !== 'function') return null
@@ -226,6 +415,17 @@ export function apply(ctx, rawConfig = {}) {
    */
   function applyConfig(patch) {
     const requested = sanitizePatch(patch)
+    // 对象型设置（laneGuard / peerShare / duoPeers）必须**深合并**再解析：
+    // 面板只发它改的那个字段（例如 { peerShare: { enabled: true } }），若整体替换，
+    // 端口与 token 会被悄悄打回默认值 —— 表现为「开一下开关，端口自己变了」。
+    for (const key of ['peerShare', 'laneGuard']) {
+      const incoming = requested[key]
+      if (incoming === undefined || incoming === null || typeof incoming !== 'object' || Array.isArray(incoming)) continue
+      const current = readOverrides()[key]
+      requested[key] = (current !== null && typeof current === 'object' && !Array.isArray(current))
+        ? { ...current, ...incoming }
+        : incoming
+    }
     const resolved = resolveConfig(runtime.patch, { ...readOverrides(), ...requested })
     const persisted = { ...readOverrides() }
     for (const key of Object.keys(requested)) persisted[key] = resolved[key]
@@ -260,6 +460,10 @@ export function apply(ctx, rawConfig = {}) {
     }
     // 自动选择开关：选择器必须立刻不再是锚点，而且座位上的模型应该马上变成路由
     // 结果——等下一次回答才生效会让人以为「开关没反应」。
+    // 互借开关/端口/token 改动要立刻生效：出借端点按 host/port 重绑，借用车道重新注册。
+    if (requested.peerShare !== undefined) {
+      applyPeerConfig()
+    }
     if (requested.autoSelect !== undefined) {
       for (const state of sessions.values()) {
         state.external = null
@@ -1368,6 +1572,17 @@ export function apply(ctx, rawConfig = {}) {
 
     applyConfig,
 
+    /** 互借状态（面板与工具共用）。 */
+    peer: () => ({ ok: true, peer: peerView() }),
+
+    /** 主动重拉对侧清单（借用方）。 */
+    peerRefresh: async () => {
+      if (peerState.borrower === null) return { ok: false, error: '借用车道未启用' }
+      await peerState.borrower.refreshModels()
+      refreshCatalog('peer-refresh').catch(() => {})
+      return { ok: true, peer: peerView() }
+    },
+
     importReport: (reportPath) => {
       if (typeof reportPath !== 'string' || reportPath.trim() === '') {
         return { ok: false, error: '需要提供报告文件路径' }
@@ -1435,6 +1650,7 @@ export function apply(ctx, rawConfig = {}) {
         // the health ledger so "why did it pick the second-best lane" has a
         // visible answer: the first one was already busy.
         concurrency: inflight.snapshot(),
+        peer: peerView(),
         lanesHealth: snapshot.lanes,
         modelsHealth: snapshot.models.slice(0, 40),
         strategies: ['quality', 'balanced', 'economy', 'speed'],

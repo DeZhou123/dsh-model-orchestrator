@@ -111,6 +111,23 @@ window.__ModuleLoader__.load({
       channelData: '渠道数据',
       channelDataOn: '已接入',
       channelDataOff: '未接入',
+      peerShare: '渠道互借',
+      peerShareHint: '打开后本机可把空闲车道借给对侧实例，也可借用对侧的额度（两端需同一个 token）',
+      peerShareOn: '已开启',
+      peerShareOff: '已关闭',
+      peerRole: '角色',
+      peerRoleBoth: '既借又出',
+      peerRoleLend: '只出借',
+      peerRoleBorrow: '只借用',
+      peerRoleOff: '不参与',
+      peerBorrowWhen: '借用时机',
+      peerBorrowExhausted: '本机车道全不可用时',
+      peerBorrowAlways: '一直参与打分',
+      peerServer: '出借端点',
+      peerServerOff: '未监听',
+      peerLendable: '可借车道',
+      peerBorrow: '借用方',
+      peerToken: '互借 token',
       noPreference: '未设置',
       effort: '推理档',
       bestLane: '最佳渠道',
@@ -217,6 +234,23 @@ window.__ModuleLoader__.load({
       channelData: 'Channel data',
       channelDataOn: 'connected',
       channelDataOff: 'not connected',
+      peerShare: 'Channel sharing',
+      peerShareHint: 'Lend idle lanes to the peer instance and borrow its quota (both sides need the same token)',
+      peerShareOn: 'on',
+      peerShareOff: 'off',
+      peerRole: 'Role',
+      peerRoleBoth: 'lend + borrow',
+      peerRoleLend: 'lend only',
+      peerRoleBorrow: 'borrow only',
+      peerRoleOff: 'not involved',
+      peerBorrowWhen: 'Borrow when',
+      peerBorrowExhausted: 'local lanes are exhausted',
+      peerBorrowAlways: 'always scored',
+      peerServer: 'Lend endpoint',
+      peerServerOff: 'not listening',
+      peerLendable: 'Lendable lanes',
+      peerBorrow: 'Borrower',
+      peerToken: 'Share token',
       noPreference: 'not set',
       effort: 'Effort',
       bestLane: 'Best channel',
@@ -576,6 +610,8 @@ window.__ModuleLoader__.load({
       const dataset = data?.dataset ?? {}
       const preference = data?.preference ?? { configured: { model: '', provider: '', fallback: 'auto' }, active: false, suspended: false, group: null, exhausted: null, effectiveMode: 'auto' }
       const channelData = data?.channelData ?? { available: false }
+      // 渠道互借状态（出借端点 / 可借车道 / 借用方）。Host 没给就当未启用。
+      const peer = data?.peer ?? null
       // Before the uncapped list arrives (or against an older Host that has no
       // /families route) the dialog can still show the summary's groups — strictly
       // better than an empty screen.
@@ -836,6 +872,54 @@ window.__ModuleLoader__.load({
           ]),
           h('span', { key: 'h', className: 'mo-note' }, t('autoSelectHint')),
         ]),
+        // ── 渠道互借（2026-10-29）───────────────────────────────────────────
+        // 一个开关 + 角色 + 借用时机。开关先落盘，端点重绑与借用车道注册由 Host 侧
+        // applyConfig 里同步完成 —— 面板不需要知道端口重绑这回事。
+        h('div', { key: 'peer', className: 'mo-row' }, [
+          h('label', { key: 'l', className: 'mo-check' }, [
+            h('input', {
+              key: 'c',
+              type: 'checkbox',
+              checked: peer?.enabled === true,
+              disabled: busy,
+              onChange: (event) => onConfig({ peerShare: { enabled: event.target.checked === true } }),
+            }),
+            h('span', { key: 't' }, t('peerShare')),
+          ]),
+          peer?.enabled === true ? h('span', { key: 'rl' }, t('peerRole')) : null,
+          peer?.enabled === true ? h('select', {
+            key: 'rsel',
+            className: 'mo-select',
+            value: peer?.role ?? 'both',
+            disabled: busy,
+            onChange: (event) => onConfig({ peerShare: { role: String(event.target.value ?? 'both') } }),
+          }, [
+            h('option', { key: 'both', value: 'both' }, t('peerRoleBoth')),
+            h('option', { key: 'lend', value: 'lend' }, t('peerRoleLend')),
+            h('option', { key: 'borrow', value: 'borrow' }, t('peerRoleBorrow')),
+            h('option', { key: 'off', value: 'off' }, t('peerRoleOff')),
+          ]) : null,
+          peer?.enabled === true && (peer?.role === 'both' || peer?.role === 'borrow') ? h('span', { key: 'bl' }, t('peerBorrowWhen')) : null,
+          peer?.enabled === true && (peer?.role === 'both' || peer?.role === 'borrow') ? h('select', {
+            key: 'bsel',
+            className: 'mo-select',
+            value: peer?.borrowWhen ?? 'exhausted',
+            disabled: busy,
+            onChange: (event) => onConfig({ peerShare: { borrowWhen: String(event.target.value ?? 'exhausted') } }),
+          }, [
+            h('option', { key: 'exhausted', value: 'exhausted' }, t('peerBorrowExhausted')),
+            h('option', { key: 'always', value: 'always' }, t('peerBorrowAlways')),
+          ]) : null,
+        ]),
+        h('div', { key: 'peerhint', className: 'mo-note' }, t('peerShareHint')),
+        peer?.enabled === true ? h('div', { key: 'peerst', className: 'mo-note' },
+          t('peerServer') + '：' + (peer.server === null
+            ? t('peerServerOff') + (peer.serverError ? '（' + peer.serverError + '）' : '')
+            : peer.server.host + ':' + peer.server.port)
+          + ' · ' + t('peerLendable') + ' ' + (peer.lendable?.count ?? 0)
+          + ' · ' + t('peerBorrow') + ' ' + (peer.borrow?.peerUrl === '' ? '—' : (peer.borrow.models?.length ?? 0) + ' 条')) : null,
+        peer?.enabled === true ? h('div', { key: 'peertok', className: 'mo-note' },
+          t('peerToken') + '：' + (peer.token === null ? '—' : peer.token.path)) : null,
         h('div', { key: 'chan', className: 'mo-note' }, t('channelData') + '：' + (channelData.available ? t('channelDataOn') : t('channelDataOff'))),
       ])
 

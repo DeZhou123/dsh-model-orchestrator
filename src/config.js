@@ -29,7 +29,7 @@ export const MUTABLE_KEYS = [
   'spreadConcurrency', 'concurrencySoftCap', 'concurrencyWeight', 'concurrencyStaleMs', 'failureBurstWindowMs',
   'routeSubagents', 'adoptUserSelection', 'routeFirstTurn', 'autoSelect', 'reasoningEffort', 'catalogRefreshMs',
   'channelDataRefreshMs', 'modelInfoTtlMs', 'catalogTimeoutMs', 'usageUnitTokens',
-  'channelData', 'freeModelData', 'laneGuard', 'duoPeers',
+  'channelData', 'freeModelData', 'laneGuard', 'duoPeers', 'peerShare',
 ]
 
 /**
@@ -66,6 +66,46 @@ function resolveDuoPeers(raw) {
     out.push({ label: label === '' ? 'peer' : label, healthPath, patchPath })
   }
   return out
+}
+
+/** 互借角色：不参与 / 既借又出 / 只出借 / 只借用。 */
+export const PEER_ROLES = ['off', 'both', 'lend', 'borrow']
+
+/** 借用车道什么时候参与打分。 */
+export const PEER_BORROW_WHEN = ['exhausted', 'always']
+
+/**
+ * Coerce the peer-share block, keeping every default the caller left out.
+ *
+ * 写成逐字段而不是展开：patch 里只写 `enabled: true` 时必须继承默认端口与角色；
+ * 而写了 `role: 'lend'` 也不能把 `peerProvider` 变成空串——那会让借用方的回环守卫失效。
+ * 端口用 0 表示「由系统分配」，其余越界值退回默认。
+ */
+function resolvePeerShare(raw) {
+  const defaults = DEFAULT_CONFIG.peerShare
+  const value = isPlainObject(raw) ? raw : {}
+  const role = String(value.role ?? defaults.role).trim().toLowerCase()
+  const borrowWhen = String(value.borrowWhen ?? defaults.borrowWhen).trim().toLowerCase()
+  const port = Math.round(Number(value.port ?? defaults.port))
+  return {
+    enabled: isBool(value.enabled) ? value.enabled : defaults.enabled,
+    role: PEER_ROLES.includes(role) ? role : defaults.role,
+    label: isString(value.label) ? value.label.trim() : defaults.label,
+    host: isString(value.host) && value.host.trim() !== '' ? value.host.trim() : defaults.host,
+    port: Number.isFinite(port) && port >= 0 && port <= 65535 ? port : defaults.port,
+    token: isString(value.token) ? value.token.trim() : defaults.token,
+    allowProviders: isStringArray(value.allowProviders)
+      ? value.allowProviders.map(entry => entry.trim().toLowerCase()).filter(Boolean)
+      : [...defaults.allowProviders],
+    denyProviders: isStringArray(value.denyProviders)
+      ? value.denyProviders.map(entry => entry.trim().toLowerCase()).filter(Boolean)
+      : [...defaults.denyProviders],
+    peerUrl: isString(value.peerUrl) ? value.peerUrl.trim() : defaults.peerUrl,
+    peerToken: isString(value.peerToken) ? value.peerToken.trim() : defaults.peerToken,
+    peerProvider: (isString(value.peerProvider) ? value.peerProvider.trim() : defaults.peerProvider) || defaults.peerProvider,
+    borrowWhen: PEER_BORROW_WHEN.includes(borrowWhen) ? borrowWhen : defaults.borrowWhen,
+    timeoutMs: clamp(Math.round(Number(value.timeoutMs ?? defaults.timeoutMs)) || defaults.timeoutMs, 1000, 300_000),
+  }
 }
 
 /** Modes the router understands. */
@@ -159,6 +199,7 @@ export function resolveConfig(raw, overrides) {
     freeModelData: pick(merged, DEFAULT_CONFIG, 'freeModelData', isBool),
     laneGuard: resolveLaneGuard(pick(merged, DEFAULT_CONFIG, 'laneGuard', isPlainObject)),
     duoPeers: resolveDuoPeers(pick(merged, DEFAULT_CONFIG, 'duoPeers', Array.isArray)),
+    peerShare: resolvePeerShare(pick(merged, DEFAULT_CONFIG, 'peerShare', isPlainObject)),
     channelPackDir: pick(merged, DEFAULT_CONFIG, 'channelPackDir', isString),
     freeModelDir: pick(merged, DEFAULT_CONFIG, 'freeModelDir', isString),
     usageUnitTokens: Math.max(10_000, pick(merged, DEFAULT_CONFIG, 'usageUnitTokens', isNumber)),

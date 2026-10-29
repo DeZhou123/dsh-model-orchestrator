@@ -189,6 +189,98 @@ break 都会归还；超过 `concurrencyStaleMs` 的租约自动失效，不会�
 
 ---
 
+## 渠道互借（2026-10-29，v2.6.0）
+
+### 它解决什么
+
+本机跑着两套独立 DSH（A 主实例、B 独立实例），两边的**账号额度完全独立**。实际用起来
+总是一边先烧穿：A 的免费车道限流了，B 那边还闲着。以前只能人肉去 B 里干活。
+
+打开这个开关后，**额度充裕的一端可以把车道借给对侧用**：请求真的在对侧进程里发出去，
+消耗的是对侧的账号额度，本机的会话不受影响。
+
+### 为什么必须走线路级中继
+
+两端注册的 provider 列表几乎一样（同一个 channel-pack），真正不同的是账号与额度。
+所以「借对侧的渠道」不是复制一份配置能成立的 —— 请求必须在对侧进程里发出。
+于是实现是：
+
+```
+借用方 (B)                                   出借方 (A)
+  peer 适配器  ──── POST /peershare/v1/stream ────▶  ctx.llm.stream()
+  (一条普通 provider)                                (A 自己的车道)
+       ▲                                                  │
+       └────────── NDJSON: {type:'chunk',chunk} ──────────┘
+```
+
+### 线上协议不是 OpenAI wire
+
+两端是同一个插件版本，可以直接收发 harness 自己的 `GenerateOptions` / `StreamChunk`
+（都可无损 JSON 化）。走 OpenAI wire 要多写一遍 messages / tool_calls / SSE 的双向翻译，
+多出来的每一行都是「翻译错了但看起来通了」的风险。协议带 `protocol` 字段，不匹配就明确
+拒绝（`PROTOCOL_MISMATCH`），不做兼容猜测。
+
+### 配置
+
+```yaml
+- id: model-orchestrator
+  config:
+    peerShare:
+      enabled: true
+      role: both            # off | both | lend | borrow
+      label: 'A'            # 面板上显示的对端名字
+      host: 127.0.0.1       # 出借端点监听地址（默认只绑回环；跨机用才填局域网 IP 或 0.0.0.0）
+      port: 18326
+      token: ''             # 空 = 用 $DSH_HOME/model-orchestrator/peer-token
+      allowProviders: []    # 只借出这些 provider（空 = 全部）
+      denyProviders: []     # 永不借出
+      peerUrl: 'http://192.168.1.20:18327'   # 借用方：对侧地址
+      peerToken: '<对侧的 token>'
+      peerProvider: peer    # 借用车道在本机的 provider 名
+      borrowWhen: exhausted # exhausted（本机全灭才借）| always（一直参与打分）
+```
+
+面板：设置页有一个「渠道互借」开关 + 角色 + 借用时机；命令行：
+
+```
+/route peer              # 看状态：出借端点、可借车道数、借用方拿到几条对侧模型
+/route peer on           # 打开
+/route peer off          # 关闭（端点立即停止监听）
+/route peer lend         # 只出借
+/route peer borrow       # 只借用
+```
+
+模型侧：`model_orchestrator action=peer`，或 `action=set` 带 `peerShare` 字段。
+
+### 三条必须知道的语义
+
+1. **`borrowWhen: exhausted` 是默认，不是保守**。互借是兜底，不是常态：本机还有任何合格
+   车道时借用车道不进入打分。否则会用对侧的账号替本机烧钱，而且对侧一断线，本机明明
+   有可用车道却先撞墙。要两端按打分自然分摊额度，才改成 `always`。
+2. **图片不跨实例**。图片块引用的是本机附件 id，对侧读不到。适配器因此不声明 image
+   模态（路由层不会把带图请求派过来），真收到图片块时明确报 `UNSUPPORTED_CONTENT`，
+   而不是让模型「看不到图却照答」。
+3. **只借车道，不借权限**。借用方能调的只有出借方**当前可路由且未 denied** 的
+   provider/model；`allowProviders` / `denyProviders` 可以再收窄。开了互借绝不会多出
+   一条出借方自己没有的渠道。
+
+### 安全边界
+
+- token 落 `$DSH_HOME/model-orchestrator/peer-token`（首次开启自动生成 32 字节），
+  比较走 `timingSafeEqual`，长度不同直接 false；
+- **回环守卫**：请求带 `x-peershare-hop` 头，或 provider 名等于本机的借用车道，直接 508。
+  这条踩过：借用方是链路**起点**，不该带 hop 头（带了就被自己的守卫拒绝）；
+- 出借端点**默认只绑 `127.0.0.1`**（2026-10-29 改）：拿到 token 就能花对侧的额度，
+  一个默认开在局域网的端口等于把额度暴露给同网段任何一台机器。要跨机用就显式填局域网
+  地址或 `0.0.0.0`，并自己确认防火墙只放行对侧那一端。
+
+### 自检
+
+```
+node tools/peershare-smoke.mjs   # 21 条断言：鉴权/协议/回环/清单/流式还原/失败透传/图片拒绝/默认只绑回环
+```
+
+---
 ## 偏好模式
 
 面板里点「偏好」，或在 `/route` 里：

@@ -339,6 +339,10 @@ export function createCatalog(options) {
     else if (channel?.disabled === true) deniedReasonText = '该模型在渠道面板中被关闭'
 
     const tags = info.tags
+    // 互借车道（2026-10-29）：provider 名等于 peerShare.peerProvider 的行是借来的，
+    // 不是本机注册的真实渠道。路由层据此决定它是否参战（见 src/router.js 的 exhausted 分支）。
+    const borrowed = config.peerShare?.enabled === true
+      && String(config.peerShare.peerProvider ?? '').toLowerCase() === row.provider.toLowerCase()
     const multiplier = laneMultiplier(row.modelName)
     const freeLane = laneIsFree(row.modelName)
     const burn = costFactor(tags) * multiplier * (freeLane ? 0.6 : 1)
@@ -366,6 +370,7 @@ export function createCatalog(options) {
       freeLane,
       burn,
       channel,
+      borrowed,
     }
   }
 

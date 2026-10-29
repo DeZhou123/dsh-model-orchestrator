@@ -50,7 +50,8 @@ export function registerAgentSurface(options) {
         'unprefer —— 退出偏好模式，回到自动调度；',
         'refresh —— 重新拉取实时模型清单与渠道数据；',
         'import_report —— 从磁盘上的测速报告 markdown 重新导入智力/速度优先级数据；',
-        'clear_import —— 丢弃导入的优先级数据，回到插件自带的那份。',
+        'clear_import —— 丢弃导入的优先级数据，回到插件自带的那份；',
+        'peer —— 渠道互借状态：出借端点、可借车道、借用方已注册的对侧模型（用 set 的 peerShare 字段改设置）。',
         '额度耗尽、限流或渠道不可用时，会先在同一个模型的其它渠道间切换；只有整个模型都不可用才换模型。',
       ].join(' '),
       parameters: {
@@ -58,7 +59,7 @@ export function registerAgentSurface(options) {
         properties: {
           action: {
             type: 'string',
-            enum: ['status', 'explain', 'lanes', 'set', 'prefer', 'unprefer', 'refresh', 'import_report', 'clear_import'],
+            enum: ['status', 'explain', 'lanes', 'set', 'prefer', 'unprefer', 'refresh', 'import_report', 'clear_import', 'peer'],
             description: '要执行的操作。',
           },
           sessionId: { type: 'string', description: 'status/explain 时可指定会话；省略则用最近活跃的会话。' },
@@ -75,6 +76,11 @@ export function registerAgentSurface(options) {
           allow: { type: 'array', items: { type: 'string' }, description: 'set：即使在内置黑名单里也允许动用。' },
           denyProviders: { type: 'array', items: { type: 'string' }, description: 'set：排除整个车道。' },
           path: { type: 'string', description: 'import_report：测速报告 markdown 的绝对路径。' },
+          peerShare: {
+            type: 'object',
+            description: 'set：渠道互借设置（enabled/role/host/port/token/peerUrl/peerToken/peerProvider/borrowWhen/allowProviders/denyProviders）。'
+              + 'role 取值 off|both|lend|borrow；borrowWhen 取值 exhausted|always。',
+          },
         },
         required: ['action'],
         additionalProperties: false,
@@ -98,7 +104,8 @@ export function registerAgentSurface(options) {
           case 'set': {
             const patch = {}
             for (const key of ['mode', 'strategy', 'preferModel', 'preferProvider', 'preferFallback',
-              'turnTokenBudget', 'deny', 'allow', 'denyProviders', 'reasoningEffort', 'routeFirstTurn', 'autoSelect']) {
+              'turnTokenBudget', 'deny', 'allow', 'denyProviders', 'reasoningEffort', 'routeFirstTurn', 'autoSelect',
+              'peerShare']) {
               if (args?.[key] !== undefined) patch[key] = args[key]
             }
             if (Object.keys(patch).length === 0) return { ok: false, error: 'set 需要至少一个要修改的字段' }
@@ -126,6 +133,8 @@ export function registerAgentSurface(options) {
             return api.importReport(String(args?.path ?? ''))
           case 'clear_import':
             return api.clearImport()
+          case 'peer':
+            return api.peer()
           default:
             return { ok: false, error: 'unknown action "' + action + '"' }
         }
@@ -137,7 +146,7 @@ export function registerAgentSurface(options) {
   ctx.inject(['commands'], (scoped) => {
     const dispose = scoped.commands.register({
       name: 'route',
-      description: '查看/切换模型自动调度：/route [status|explain|lanes|auto|manual|off|prefer <模型>|unprefer|quality|balanced|economy|speed|reasoning <auto|preserve|effort>|firstturn <on|off>|autoselect <on|off>|refresh]',
+      description: '查看/切换模型自动调度：/route [status|explain|lanes|auto|manual|off|prefer <模型>|unprefer|quality|balanced|economy|speed|reasoning <auto|preserve|effort>|firstturn <on|off>|autoselect <on|off>|refresh|peer [on|off|lend|borrow|both]]',
       handler: async (invocation) => {
         const input = String(invocation?.rawInput ?? '').trim()
         const [verbRaw, ...rest] = input.split(/\s+/).filter(Boolean)
@@ -159,6 +168,18 @@ export function registerAgentSurface(options) {
           case 'refresh': {
             const catalog = await api.refresh()
             value = { ok: true, catalog }
+            break
+          }
+          case 'peer': {
+            const next = (rest[0] ?? '').toLowerCase()
+            if (next === '') {
+              value = api.peer()
+              break
+            }
+            if (next === 'on') value = { ok: true, config: api.applyConfig({ peerShare: { enabled: true } }) }
+            else if (next === 'off') value = { ok: true, config: api.applyConfig({ peerShare: { enabled: false } }) }
+            else if (['lend', 'borrow', 'both', 'off'].includes(next)) value = { ok: true, config: api.applyConfig({ peerShare: { role: next } }) }
+            else value = { ok: false, error: '用法：/route peer [on|off|lend|borrow|both]' }
             break
           }
           case 'auto':
@@ -278,6 +299,20 @@ export function renderCommand(value) {
           + '  渠道 ' + group.lanes + '  ' + (group.best ?? ''))
       }
     }
+    return lines.join('\n')
+  }
+  if (value?.peer !== undefined) {
+    const peer = value.peer
+    const lines = ['渠道互借：' + (peer.enabled ? '已开启' : '已关闭') + ' · 角色 ' + peer.role + ' · 借用时机 ' + peer.borrowWhen]
+    lines.push(peer.server === null
+      ? '出借端点：未监听' + (peer.server?.error === undefined || peer.server?.error === '' ? '' : '（' + peer.server.error + '）')
+      : '出借端点：' + peer.server.host + ':' + peer.server.port + '（可借 ' + peer.lendable.count + ' 条车道）')
+    if (peer.lendable.providers.length > 0) lines.push('可借 provider：' + peer.lendable.providers.join('，'))
+    lines.push(peer.borrow.peerUrl === ''
+      ? '借用方：未配置对侧地址'
+      : '借用方：' + peer.borrow.peerUrl + ' · ' + (peer.borrow.registered ? '已注册' : '未注册')
+        + ' · ' + peer.borrow.models.length + ' 条对侧模型'
+        + (peer.borrow.error === '' ? '' : '（' + peer.borrow.error + '）'))
     return lines.join('\n')
   }
   if (value?.decisions !== undefined) {

@@ -390,6 +390,44 @@ export const DEFAULT_CONFIG = {
   requestRepeatBlockMs: REQUEST_REPEAT.blockMs,
   /** Load the priority report from this path on start; empty disables it. */
   reportPath: '',
+  /**
+   * 渠道互借（2026-10-29）。
+   *
+   * 背景：A/B 两端注册的 provider 列表几乎一样，真正会先烧穿的是**某一端的账号额度**。
+   * 打开后，额度充裕的一端可以把车道借给对侧用（见 src/peershare.js）。
+   *
+   * role 三态：
+   *   off    — 不参与互借（默认，等价于关闭）；
+   *   both   — 既出借也借用；
+   *   lend   — 只出借；
+   *   borrow — 只借用。
+   *
+   * borrowWhen 决定借用车道什么时候才参与打分：
+   *   exhausted — 本机自己的车道全不可用时才借（默认；互借是兜底，不是常态）；
+   *   always    — 一直参与打分（两端额度按打分自然分摊）。
+   */
+  peerShare: {
+    enabled: false,
+    role: 'both',
+    label: '',
+    /**
+     * 只绑回环（2026-10-29 改）。
+     *
+     * 出借端点拿到 token 就能用对侧的额度，默认不该出现在局域网上：同一网段任何
+     * 一台机器扫到 18326 都可以先发一个 GET /hello 试探。要跨机用就显式填局域网
+     * 地址或 0.0.0.0（此时务必自己确认防火墙与 token 只发给可信的一端）。
+     */
+    host: '127.0.0.1',
+    port: 18326,
+    token: '',
+    allowProviders: [],
+    denyProviders: [],
+    peerUrl: '',
+    peerToken: '',
+    peerProvider: 'peer',
+    borrowWhen: 'exhausted',
+    timeoutMs: 15_000,
+  },
 }
 
 export default DEFAULT_CONFIG
