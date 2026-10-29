@@ -104,10 +104,16 @@ function sendJson(res, code, value) {
  *
  * 只从实时目录挑，且要求 denied !== true —— 一条在本机被屏蔽/冷却的车道，借给对侧
  * 只会把同一堵墙转嫁过去。allow/deny 按 provider 名二次收窄。
+ *
+ * **借来的车道不再借出去**（2026-10-29 修）：目录里 provider 等于本机借用车道名
+ * （默认 'peer'）的行是**对侧**的车道，把它放进出借清单等于把「A 借给 B 的东西
+ * 再借回给 A」——两端都是 both 时会形成环路，请求在两端之间来回中继，直到某一边
+ * 的 hop 守卫或超时把它掐断。实测 B 侧一度把 1201 条对侧车道挂进了自己的出借清单。
  */
 export function lendableRows(rows, options = {}) {
   const allow = new Set((options.allowProviders ?? []).map(value => String(value).toLowerCase()).filter(Boolean))
   const deny = new Set((options.denyProviders ?? []).map(value => String(value).toLowerCase()).filter(Boolean))
+  const selfProvider = String(options.selfProvider ?? '').toLowerCase()
   const out = []
   const seen = new Set()
   for (const row of Array.isArray(rows) ? rows : []) {
@@ -115,6 +121,9 @@ export function lendableRows(rows, options = {}) {
     const model = String(row?.model ?? '')
     if (provider === '' || model === '') continue
     const key = provider.toLowerCase()
+    // 借来的车道：provider 名就是本机的借用车道，或目录层已经打了 borrowed 标记。
+    if (row.borrowed === true) continue
+    if (selfProvider !== '' && key === selfProvider) continue
     if (deny.has(key)) continue
     if (allow.size > 0 && !allow.has(key)) continue
     if (row.denied === true) continue

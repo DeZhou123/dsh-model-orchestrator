@@ -163,7 +163,29 @@ assert.equal(dead.length, 2, '连不上对侧时保留上一次清单，便于�
 assert.notEqual(borrower.modelsError, '');
 ok('对侧不可达 → 保留上次清单并记错误', borrower.modelsError.slice(0, 40));
 
-console.log('[5] 端点默认监听地址');
+console.log('[5] 借来的车道不再借出去');
+// 2026-10-29 实测事故：两端都开 both 时，B 把自己从 A 借来的 1201 条车道又挂进了自己的
+// 出借清单 —— A 再从 B 借，就是「A→B→A」的环路。判据是清单里不得出现借用车道名。
+const withBorrowed = [
+  ...ROWS,
+  { provider: 'peer', model: 'raccoon/sn-deepseek-v4-1-flash-1017', modelName: '借来的', tags: [] },
+  { provider: 'peer', model: 'buddy/hy3', modelName: '借来的2', tags: [] },
+]
+const noSelf = lendableRows(withBorrowed, { denyProviders: ['buddy'], selfProvider: 'peer' })
+assert.equal(noSelf.filter(row => row.provider === 'peer').length, 0, '借用车道不得出现在自己的出借清单里');
+ok('selfProvider 把借来的车道挡在清单外', noSelf.length);
+const flagged = lendableRows(
+  [{ provider: 'other', model: 'm', modelName: 'm', borrowed: true, tags: [] }, ...ROWS],
+  { denyProviders: ['buddy'] },
+)
+assert.equal(flagged.filter(row => row.borrowed === true).length, 0, '目录层打了 borrowed 标记的行同样要挡掉');
+ok('borrowed 标记的行不进清单', flagged.length);
+// 证伪：不传 selfProvider 时，那条借来的车道**确实**会进清单（否则上面两条断言是空的）
+const leaky = lendableRows(withBorrowed, { denyProviders: ['buddy'] })
+assert.equal(leaky.filter(row => row.provider === 'peer').length, 2, '不设守卫时借来的车道会漏进出借清单');
+ok('对照：不设 selfProvider 时确实会漏（2 条）', leaky.length);
+
+console.log('[6] 端点默认监听地址');
 // 2026-10-29 改：默认只绑回环。判据不是「配置里写了 127.0.0.1」，而是「不显式配 host 时
 // 端点真的没出现在局域网上」——绑 0.0.0.0 时 bind 出来的地址是 0.0.0.0，这是可失败的。
 const { DEFAULT_CONFIG } = await import('../src/policy-defaults.js')

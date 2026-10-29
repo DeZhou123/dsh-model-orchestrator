@@ -233,6 +233,9 @@ export function apply(ctx, rawConfig = {}) {
     return lendableRows(catalog.current.rows, {
       allowProviders: peer.allowProviders,
       denyProviders: peer.denyProviders,
+      // 本机的借用车道名：这条 provider 下的行是**对侧**的车道，不能再借出去，
+      // 否则两端都开 both 时会互相把对方借来的车道再借回去（环路）。
+      selfProvider: peer.peerProvider,
     })
   }
 
