@@ -224,7 +224,13 @@ export function apply(ctx, rawConfig = {}) {
   }
 
   function peerConfig() {
-    return runtime.config.peerShare ?? DEFAULT_CONFIG.peerShare
+    const peer = runtime.config.peerShare ?? DEFAULT_CONFIG.peerShare
+    // 启动时 loadOrCreateToken 生成的 token 只在内存里；applyConfig 重解析配置
+    // 时必须保留，否则任意一次调度设置变更都会把出借端点变回空 token。
+    if (peer.token === '' && peerState.tokenInfo !== null) {
+      return { ...peer, token: peerState.tokenInfo.token }
+    }
+    return peer
   }
 
   /** 出借清单：本机实时目录里可借的行。 */
@@ -443,6 +449,10 @@ export function apply(ctx, rawConfig = {}) {
     if (requested.autoSelect === true && persisted.mode === 'manual') persisted.mode = 'auto'
     writeOverrides(persisted)
     runtime.config = resolveConfig(runtime.patch, persisted)
+    // 自动生成的出借 token 不进入 overrides.json，但不能被配置重解析冲掉。
+    if (runtime.config.peerShare.token === '' && peerState.tokenInfo !== null) {
+      runtime.config.peerShare = { ...runtime.config.peerShare, token: peerState.tokenInfo.token }
+    }
     // A settings change is an explicit instruction: forget per-session
     // preference suspensions and picker overrides so the new setting is what
     // actually runs. Clearing the applied route is what makes the change take
