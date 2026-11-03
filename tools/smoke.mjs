@@ -896,5 +896,65 @@ console.log('\n[14] failure-burst deduplication')
     cooldowns.every(value => value <= cooldowns[0]),
     cooldowns.join(','))
 }
+console.log('\n[15] 聚合车道（互借）不得被一次失败判死')
+{
+  // 实测 2026-11-03：B 借 A 的 cline 调 xiaomi/mimo-v2.6-pro 拿到 402，clause 是
+  // 「改用其它 provider」—— QUOTA_PER_MODEL_TEXT 只认「其它模型」，于是判成 lane 级，
+  // 而借用方的 lane 就是 peer 这个聚合体，10 条活着的借入车道一起被停到午夜。
+  const config = resolveConfig({}, { peerShare: { enabled: true, peerProvider: 'peer' } })
+  const isAgg = provider => String(provider).toLowerCase() === 'peer'
+  const peerLaneQuota = { code: 'QUOTA', status: 402, message: '模型 xiaomi/mimo-v2.6-pro 的所有账号均不可用 —— 额度已用尽（HTTP 402 Insufficient credits）—— 等待不会恢复，请到 app.cline.bot 充值，或改用其它 provider' }
+
+  const aggregator = createHealth({ userDir: null, clock, isAggregator: isAgg })
+  const verdict = aggregator.markFailure('peer', 'xiaomi/mimo-v2.6-pro', peerLaneQuota)
+  check('聚合车道上的车道级判决降为模型级', verdict.scope, 'model')
+  checkThat('降级被标出来（面板解释要说实话）', verdict.demoted === true)
+  checkThat('reason 带上聚合标记', String(verdict.reason).startsWith('〔聚合车道：仅本模型〕'))
+  check('失败的模型确实冷却', aggregator.stateOf('peer', 'xiaomi/mimo-v2.6-pro').available, false)
+  check('同一聚合车道的兄弟模型不受影响', aggregator.stateOf('peer', 'buddy/deepseek-v4.1-flash').available, true)
+
+  // 兄弟模型仍能被路由选中——这才是「偏好模式不被一次 402 打断」的真正判据。
+  const rows = [
+    lane('peer', 'xiaomi/mimo-v2.6-pro', { family: 'mimo-v2.6-pro', intel: 46, quality: 0.93 }),
+    lane('peer', 'buddy/deepseek-v4.1-flash', { family: 'deepseek-v4.1-flash', intel: 39, quality: 0.8 }),
+  ]
+  const needs = readNeeds({}, config)
+  const routed = selectRoute({
+    rows, health: aggregator, config, anchor: null, needs, mode: 'prefer',
+    preference: { model: 'deepseek-v4.1-flash', provider: '', fallback: 'auto' },
+  })
+  check('偏好模型仍在借入车道上被选中', routed?.model, 'buddy/deepseek-v4.1-flash')
+  checkThat('偏好没有被暂停', routed?.exhausted === undefined)
+
+  // 反证：真实渠道上同样的 402 必须仍是车道级——否则这一修就把真实故障也放过了。
+  const real = createHealth({ userDir: null, clock, isAggregator: isAgg })
+  const realVerdict = real.markFailure('cline', 'xiaomi/mimo-v2.6-pro', peerLaneQuota)
+  check('真实渠道的车道级判决保持不变', realVerdict.scope, 'lane')
+  check('真实渠道整条车道确实停了', real.stateOf('cline', 'buddy/deepseek-v4.1-flash').available, false)
+
+  // 落盘自愈：磁盘上历史遗留的聚合车道级停车，下次加载要清掉。
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'model-orchestrator-aggregator-'))
+  const legacy = {
+    version: 1,
+    updatedAt: NOW,
+    models: [
+      { provider: 'peer', model: 'buddy/deepseek-v4.1-flash', status: 'quota', until: NOW + 3_600_000, reason: 'cline: 402 Insufficient credits', strikes: 0, lastAt: NOW, lastOkAt: 0, counters: { calls: 0, errors: 1, inTok: 0, outTok: 0, ttftSum: 0, ttftN: 0, ttftEwma: 0, tpsSum: 0, tpsN: 0 } },
+    ],
+    lanes: [
+      { provider: 'peer', status: 'quota', until: NOW + 3_600_000, reason: 'cline: 402 Insufficient credits', strikes: 0, lastAt: NOW, counters: { calls: 0, errors: 0, inTok: 0, outTok: 0, ttftSum: 0, ttftN: 0, ttftEwma: 0, tpsSum: 0, tpsN: 0 } },
+    ],
+    buckets: {},
+  }
+  fs.writeFileSync(path.join(dir, 'health.json'), JSON.stringify(legacy))
+  const healed = createHealth({ userDir: dir, clock, isAggregator: isAgg })
+  healed.load()
+  check('历史遗留的聚合车道级停车被清掉', healed.stateOf('peer', 'buddy/deepseek-v4.1-flash').available, true)
+  check('兄弟模型（无记录）当然可用', healed.stateOf('peer', 'trae/deepseek-v4.1-flash').available, true)
+
+  // 互借关掉时不再是聚合体：判定回到车道级，避免把真实渠道的故障放过。
+  const offAgg = createHealth({ userDir: null, clock, isAggregator: () => false })
+  check('没有聚合判据时维持车道级', offAgg.markFailure('peer', 'm', peerLaneQuota).scope, 'lane')
+}
+
 console.log('\n' + (failures === 0 ? 'PASS' : 'FAIL') + ' — ' + (checks - failures) + '/' + checks)
 if (failures > 0) process.exitCode = 1

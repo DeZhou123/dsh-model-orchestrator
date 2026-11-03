@@ -31,6 +31,7 @@ export const MUTABLE_KEYS = [
   'channelDataRefreshMs', 'modelInfoTtlMs', 'catalogTimeoutMs', 'usageUnitTokens',
   'channelData', 'freeModelData', 'laneGuard', 'duoPeers', 'peerShare',
   'probeEnabled', 'probeEveryDays', 'probeIntervalMs', 'probeTimeoutMs', 'probeConcurrency', 'probeFirstDelayMs',
+  'probeBorrowed',
 ]
 
 /**
@@ -199,6 +200,7 @@ export function resolveConfig(raw, overrides) {
     probeTimeoutMs: Math.max(1_000, pick(merged, DEFAULT_CONFIG, 'probeTimeoutMs', isNumber)),
     probeConcurrency: Math.min(8, Math.max(1, pick(merged, DEFAULT_CONFIG, 'probeConcurrency', isNumber))),
     probeFirstDelayMs: Math.max(0, pick(merged, DEFAULT_CONFIG, 'probeFirstDelayMs', isNumber)),
+    probeBorrowed: pick(merged, DEFAULT_CONFIG, 'probeBorrowed', isBool),
     catalogRefreshMs: Math.max(15_000, pick(merged, DEFAULT_CONFIG, 'catalogRefreshMs', isNumber)),
     persistIntervalMs: Math.max(5_000, pick(merged, DEFAULT_CONFIG, 'persistIntervalMs', isNumber)),
     channelDataRefreshMs: Math.max(5_000, pick(merged, DEFAULT_CONFIG, 'channelDataRefreshMs', isNumber)),

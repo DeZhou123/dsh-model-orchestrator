@@ -410,6 +410,14 @@ export const DEFAULT_CONFIG = {
   probeConcurrency: 2,
   /** 首轮延迟，避开启动时的会话。 */
   probeFirstDelayMs: 10 * 60_000,
+  /**
+   * 是否连借来的车道一起探（默认否）。
+   *
+   * 借入行挂在同一个 peer provider 下，数量是对侧的全部模型（实测 B 侧 600 条）。
+   * 探它们等于拿**对侧**的账号额度给本机做体检，而且每条失败都会写进本机账本——
+   * 探活是「本机车道会不会静默死亡」的补丁，不是替对侧体检的工具。
+   */
+  probeBorrowed: false,
   /** Load the priority report from this path on start; empty disables it. */
   reportPath: '',
   /**

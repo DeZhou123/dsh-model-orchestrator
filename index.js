@@ -55,7 +55,26 @@ export const name = 'model-orchestrator'
 /** `llm` is what the plugin exists for. The rest degrades feature by feature. */
 export const inject = ['llm']
 
-export const version = '2.6.0'
+export const version = '2.6.1'
+
+/**
+ * 这条 provider 是不是「借来的聚合车道」。
+ *
+ * 互借把对侧几百个模型挂在同一个 provider 名下，本机并不拥有它：车道级的
+ * 「这条渠道不能服务」在这里等于「对侧全灭」，而那从来不是一次失败能证明的事。
+ * 判定只认配置里的 peerProvider，不猜名字。
+ *
+ * @param {object} config - resolved orchestrator config.
+ * @param {string} provider
+ * @returns {boolean}
+ */
+function isBorrowerProvider(config, provider) {
+  const peer = config?.peerShare
+  if (peer === null || peer === undefined || peer.enabled !== true) return false
+  const self = String(peer.peerProvider ?? '').trim().toLowerCase()
+  if (self === '') return false
+  return String(provider ?? '').trim().toLowerCase() === self
+}
 
 /** The DSH home, resolved the same way the rest of the profile resolves it. */
 function resolveHome() {
@@ -132,6 +151,9 @@ export function apply(ctx, rawConfig = {}) {
     userDir,
     persistMs: DEFAULT_CONFIG.persistIntervalMs,
     requestPolicy: () => runtime.config,
+    // 互借车道是聚合体：一次失败只证明对侧**那一个模型**不可用，不能把整条车道
+    // （= 对侧几百个模型）判死。判据每次现读配置，关掉互借后旧记录也不再被当聚合体。
+    isAggregator: (provider) => isBorrowerProvider(runtime.config, provider),
   })
   health.load()
 
@@ -579,12 +601,16 @@ export function apply(ctx, rawConfig = {}) {
     listLanes: async () => {
       if (!llmReady) return []
       const rows = catalog.current.rows ?? []
+      const config = runtime.config
       const out = []
       for (const row of rows) {
         if (row === null || row === undefined || row.denied === true) continue
         const provider = String(row.provider ?? '')
         const model = String(row.model ?? '')
         if (provider === '' || model === '') continue
+        // 借来的车道默认不探：那是拿**对侧**的账号额度给本机做体检，数量还是对侧
+        // 的全部模型（实测 600 条）。探活要回答的是「本机车道会不会静默死亡」。
+        if (config.probeBorrowed !== true && (row.borrowed === true || isBorrowerProvider(config, provider))) continue
         out.push({ provider, model })
       }
       return out

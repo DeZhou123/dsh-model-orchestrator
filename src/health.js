@@ -47,6 +47,16 @@ export const KIND = {
 
 /** Failure kinds that mean "this lane cannot serve anything right now". */
 const LANE_WIDE = new Set([KIND.QUOTA, KIND.REGION, KIND.AUTH, KIND.UNAVAILABLE])
+
+/**
+ * Reason prefix that marks a verdict demoted from lane scope to model scope.
+ *
+ * 落在 reason 里而不是加一个字段：账本是一个 v1 的扁平 JSON，老进程读到多出来的
+ * 字段会原样写回，但**判断**只认 status/until/scope 三件套；把「这条本来是车道级、
+ * 因为 provider 是聚合体才降级」写进人读的 reason，既让面板的解释是实话，也让
+ * load 时的自愈能重新认出它（见 healAggregator）。
+ */
+const AGGREGATOR_MARK = '〔聚合车道：仅本模型〕'
 // KIND.SAFETY is deliberately absent: a content refusal applies to the model on
 // that channel, while the channel's other models keep serving — the pack's own
 // policy-block bookkeeping is per account+model for the same reason.
@@ -397,7 +407,8 @@ function decayStrikes(record, now) {
 /**
  * Create the ledger.
  *
- * @param {{userDir: string|null, clock?: () => number, persistMs?: number}} options
+ * @param {{userDir: string|null, clock?: () => number, persistMs?: number,
+ *   requestPolicy?: () => object, isAggregator?: (provider: string) => boolean}} options
  */
 export function createHealth(options = {}) {
   const clock = options.clock ?? (() => Date.now())
@@ -411,6 +422,19 @@ export function createHealth(options = {}) {
    * value in effect when the next rejection arrives.
    */
   const requestPolicy = typeof options.requestPolicy === 'function' ? options.requestPolicy : () => ({})
+  /**
+   * Whether a provider id is an **aggregator** rather than a real channel.
+   *
+   * 互借车道（provider 名 = peerShare.peerProvider）就是这样一条：它下面挂的是对侧
+   * 几百个模型，本机并不拥有它。对真实渠道而言「这条车道不能服务」是准确的话——一条
+   * cline 402 意味着 cline 这条路断了；但对聚合车道，同一句话意味着「对侧那几百个
+   * 模型全部断掉」，而那从来不是一次失败能证明的事（实测 2026-11-03：一个
+   * xiaomi/mimo-v2.6-pro 的 402 把 10 条借来的 deepseek-v4.1-flash 一起停车到午夜，
+   * 而同一个中继上的 buddy/deepseek-v4.1-flash 当时是活的）。
+   *
+   * 所以聚合车道上的判决一律降为模型级：失败的那个模型冷却，兄弟模型照常参战。
+   */
+  const isAggregator = typeof options.isAggregator === 'function' ? options.isAggregator : () => false
 
   /** @type {Map<string, object>} keyed `provider\u0000model` */
   const models = new Map()
@@ -548,12 +572,36 @@ export function createHealth(options = {}) {
     return { status: KIND.OK, available: true, until: 0, reason: '', scope: 'model', strikes }
   }
 
+  /**
+   * Lane-wide verdicts on an aggregator provider become model-scoped.
+   *
+   * 聚合车道（互借）下面挂的是对侧的全部模型，一次失败只证明**那一个模型**在对侧
+   * 不可用：cline 的 402 是 mimo 的额度，不是「对侧所有模型都死了」。降级时把原始
+   * scope 写进 reason 前缀，落盘后由 {@link healAggregator} 在下次加载时照样认得。
+   *
+   * @param {string} provider
+   * @param {object} verdict - output of classifyFailure
+   * @returns {object} the verdict the ledger will actually apply
+   */
+  function demoteOnAggregator(provider, verdict) {
+    if (verdict === null || verdict === undefined) return verdict
+    if (verdict.scope !== 'lane') return verdict
+    if (verdict.kind === KIND.CONTEXT) return verdict
+    if (isAggregator(provider) !== true) return verdict
+    return {
+      ...verdict,
+      scope: 'model',
+      demoted: true,
+      reason: AGGREGATOR_MARK + verdict.reason,
+    }
+  }
+
   /** Apply one failure to the ledger and return the verdict. */
   function markFailure(provider, model, failure, meta = {}) {
     const now = clock()
     const lane = laneRecord(provider)
     const record = modelRecord(provider, model)
-    const verdict = classifyFailure(failure, { strikes: record.strikes, now })
+    const verdict = demoteOnAggregator(provider, classifyFailure(failure, { strikes: record.strikes, now }))
 
     // A malformed request, and a prompt that does not fit this model's window,
     // say nothing about the lane's health. Neither may enter the ledger:
@@ -861,6 +909,32 @@ export function createHealth(options = {}) {
      *  - verdict is now model-scoped: a lane record may not hold it, and among
      *    the model records only the one named in the reason keeps its cooldown.
      */
+    /**
+     * 聚合车道的历史车道级停车（2026-11-03）。
+     *
+     * 旧分类器把「一个模型的额度问题」写成车道级 verdict，而互借车道的 lane 记录
+     * 一旦带 QUOTA/REGION/AUTH/UNAVAILABLE，stateOf() 就会把**对侧所有模型**判成不可用
+     * ——实测 B 侧因此把 10 条活着的借入车道停到午夜。这里在加载时把这些记录降回模型级：
+     *  - 车道记录：直接清掉（车道本身不该持有这种判决）；
+     *  - 模型记录：保留自己的冷却，但 reason 打上标记，面板解释才是实话。
+     *
+     * 判据刻意保守：只动聚合 provider 的记录，真实渠道的历史停车一个字节都不碰。
+     *
+     * 两条分支的区别就在 reason 前缀上——那是唯一能区分「降级后的模型级冷却」和
+     * 「旧代码泼过来的车道级停车」的信息：
+     *  - 带标记：是 v2.6.1 写的模型级冷却，**保留**（那个模型确实坏了）；
+     *  - 不带标记却是车道级状态：旧代码把一条车道判决复制到了每个兄弟模型上，
+     *    它从来没描述过这个模型，**清掉**。
+     * 车道记录两种情况下都不该持有车道级判决（聚合车道的 lane 根本不是一条渠道）。
+     */
+    function healAggregator(record, isLane) {
+      if (isAggregator(record.provider) !== true) return { lift: false }
+      const marked = String(record.reason ?? '').startsWith(AGGREGATOR_MARK)
+      if (isLane) return { lift: record.until > now && LANE_WIDE.has(record.status) }
+      if (marked) return { lift: false }
+      return { lift: record.until > now && LANE_WIDE.has(record.status) }
+    }
+
     const NAMED_MODEL = /模型\s*["“]([^"”]+)["”]|on model "([^"]+)"/i
     function heal(record, isLane) {
       if (record.status !== KIND.QUOTA || !(record.until > now)) return { lift: false, named: null }
@@ -888,6 +962,11 @@ export function createHealth(options = {}) {
         record.until = 0
         record.reason = ''
       }
+      if (healAggregator(record, false).lift) {
+        record.status = KIND.OK
+        record.until = 0
+        record.reason = ''
+      }
       // Local patch (2026-10-17): the on-disk strike count is decayed on load as
       // well, so an upgrade inherits an honest history instead of the frozen
       // totals that kept the strongest families out of the top ten.
@@ -902,6 +981,11 @@ export function createHealth(options = {}) {
         record.reason = ''
       }
       if (heal(record, true).lift) {
+        record.status = KIND.OK
+        record.until = 0
+        record.reason = ''
+      }
+      if (healAggregator(record, true).lift) {
         record.status = KIND.OK
         record.until = 0
         record.reason = ''
