@@ -31,6 +31,19 @@ export const PEERSHARE_PROTOCOL = 'dsh-model-orchestrator/peershare-v1'
 /** 请求体上限（一次 agent 请求的 messages 可以很大，但必须有界）。 */
 const MAX_BODY_BYTES = 64 * 1024 * 1024
 
+/**
+ * 攒头阶段的总等待上限：上游一帧都不吐时最多等这么久，然后回 504。
+ *
+ * 数值不是新拍的，是照抄借用方 adapter 的 IDLE_TIMEOUT_MS（120s）——旧写法在请求发出
+ * 的瞬间就 writeHead(200)，那条空闲看门狗从「收到响应头」开始计时，所以「上游首块挂死」
+ * 的失败上限一直是 120s。现在头要等首帧输出才发，看门狗还没开始计时；不在中继这一侧
+ * 补同一把尺子，挂死就会从「120s 记一次失败」退化成「无限等下去」。
+ */
+const HEAD_WAIT_MS = 120_000
+
+/** Promise.race 的哨兵：区分「拿到帧」与「超时」。 */
+const HEAD_TIMEOUT = Symbol('peershare-head-timeout')
+
 /** 回环标记头：出现即说明这条请求已经被中继过一次。 */
 const HOP_HEADER = 'x-peershare-hop'
 
@@ -157,6 +170,7 @@ export function lendableRows(rows, options = {}) {
  * @param {() => object[]} options.models - 可出借的行
  * @param {(request: object) => AsyncIterable<object>} options.stream - 本机的 llm.stream
  * @param {string} options.selfProvider - 本机借用车道名（回环守卫）
+ * @param {number} [options.headTimeoutMs] - 攒头阶段的空闲上限（默认 HEAD_WAIT_MS；只为测试可调）
  * @param {(message: string) => void} [options.log]
  */
 export async function startPeerShareServer(options) {
@@ -165,6 +179,9 @@ export async function startPeerShareServer(options) {
   const stream = options.stream
   const selfProvider = String(options.selfProvider ?? '').toLowerCase()
   const log = typeof options.log === 'function' ? options.log : () => {}
+  const headWaitMs = Number.isFinite(Number(options.headTimeoutMs)) && Number(options.headTimeoutMs) > 0
+    ? Math.trunc(Number(options.headTimeoutMs))
+    : HEAD_WAIT_MS
 
   const server = http.createServer((req, res) => {
     void handle(req, res).catch((error) => {
@@ -259,11 +276,6 @@ export async function startPeerShareServer(options) {
         return
       }
 
-      res.writeHead(200, {
-        'content-type': 'application/x-ndjson; charset=utf-8',
-        'cache-control': 'no-store',
-        'x-peershare-protocol': PEERSHARE_PROTOCOL,
-      })
       const write = (value) => {
         if (res.writableEnded || res.destroyed) return false
         res.write(JSON.stringify(value) + '\n')
@@ -285,21 +297,171 @@ export async function startPeerShareServer(options) {
         purpose: 'peershare',
       }
       delete request.sessionId
-      try {
-        for await (const chunk of stream(request)) {
-          if (!write({ type: 'chunk', chunk })) break
-        }
-        write({ type: 'end' })
-      } catch (error) {
-        write({
-          type: 'error',
-          error: {
-            code: String(error?.code ?? 'PEERSHARE_STREAM_FAILED'),
-            status: Number.isFinite(Number(error?.status)) ? Number(error.status) : undefined,
-            message: error instanceof Error ? error.message : String(error),
-          },
+
+      // ── 首块即失败不再以 HTTP 200 开局（2026-11-03）───────────────────────────
+      //
+      // 旧写法在**还不知道上游能不能出货**时就 `writeHead(200)`，于是「上游一上来就
+      // 失败」和「正常出货」在线上是同一个状态码，失败只藏在 NDJSON 里。实测后果
+      // （_supervisor/_tmp/probe-peer-200-vs-error.mjs，2026-11-03 基线）分三种：
+      //   · 上游抛错            → 借用方 adapter 解析到 {type:'error'} 才抛出来，账本记 rate；
+      //   · 上游回 in-band error finish（workbuddy 的 `transport error: fetch failed` 就是这个形状）
+      //                          → 借用方 agent 环路的调用在账本里**一条记录都没有**；
+      //   · 上游 0 帧直接结束    → 借用方记成 calls+1 / errors=0 / **status=ok**，
+      //                          也就是「成功但 0 输出」—— 一条死车道在健康账本里看着完全健康。
+      //
+      // 规则只有一条：**还没出货的失败体现在 HTTP 状态上，已经出过货的失败只体现在 NDJSON 里**
+      // （finish 块 + end 帧的 outcome 标记）。两边都报会双计 —— 借用方 observe.js 对 thrown
+      // 记一次，in-band finish 又经 agent/request-error 记一次，一条故障在账本里变成两条。
+      //
+      // 所以：先把上游开头的帧攒在内存里（上限 MAX_HEAD_FRAMES 帧，都是有界的控制帧），
+      // 直到出现第一帧**真输出**才把 200 钉下去；在那之前失败还来得及回真状态码。
+      // 只等控制帧不会推迟首字延迟：攒到的帧在决定开局的那一刻原样刷出去。
+      //
+      // 必须一起补的副作用：头不再在 t=0 发出，借用方 adapter 的 120s 空闲看门狗（从
+      // 「收到响应头」起算）就管不到首帧之前了 —— 挂死的上游会从「120s 记一次失败」退化成
+      // 「等到调用方自己的超时」。所以攒头阶段自带 HEAD_WAIT_MS 上限，超时回 504。
+      const MAX_HEAD_FRAMES = 32
+      /** 「出货」的口径与 observe.js 的 isFirstFrame 一致：block-start / usage 这类控制帧不算。 */
+      const isOutput = (chunk) => chunk?.type === 'text-delta' || chunk?.type === 'reasoning-delta' || chunk?.type === 'tool-call-delta'
+      /** 上游把失败当成一个普通 finish 块送出来（in-band error），这是线上最常见的一种形状。 */
+      const inBandFailure = (chunk) => {
+        if (chunk?.type !== 'finish') return null
+        const kind = String(chunk?.reason?.kind ?? '')
+        if (kind !== 'error' && kind !== 'aborted') return null
+        return chunk.reason?.failure ?? { code: kind, message: kind }
+      }
+      /** 上游给的 status 只有落在 4xx/5xx 才能当 HTTP 状态码用，否则一律 502。 */
+      const httpStatusOf = (value) => {
+        const status = Number(value?.status)
+        return Number.isInteger(status) && status >= 400 && status <= 599 ? status : 502
+      }
+      const failureFrame = (error, fallbackCode) => ({
+        code: String(error?.code ?? fallbackCode),
+        status: httpStatusOf(error),
+        message: (error instanceof Error ? error.message : String(error?.message ?? error)).slice(0, 500),
+        source: 'upstream',
+      })
+
+      const openHead = () => {
+        if (headSent) return
+        headSent = true
+        res.writeHead(200, {
+          'content-type': 'application/x-ndjson; charset=utf-8',
+          'cache-control': 'no-store',
+          'x-peershare-protocol': PEERSHARE_PROTOCOL,
         })
       }
+
+      const pending = []
+      let headSent = false
+      let failedEarly = null
+      let upstreamDone = false
+      let iterator
+      // 攒头阶段的空闲计时：每拿到一帧就重新起算（老口径是「多久没有新数据」，不是「总共多久」），
+      // 到期还没等到首帧输出就回 504 —— 见 HEAD_WAIT_MS 那段注释。
+      let headDeadline = Date.now() + headWaitMs
+      const nextFrame = () => {
+        let timer
+        const guard = new Promise((resolve) => {
+          timer = setTimeout(() => resolve(HEAD_TIMEOUT), Math.max(0, headDeadline - Date.now()))
+          timer.unref?.()
+        })
+        const pendingNext = iterator.next()
+        // 超时先返回之后，这条 next() 仍可能因为 abort 而 reject；先挂个吞口，
+        // 否则 Node 会把「无人处理的拒绝」升级成进程退出。
+        pendingNext.catch(() => {})
+        return Promise.race([pendingNext, guard]).finally(() => clearTimeout(timer))
+      }
+      try {
+        iterator = stream(request)[Symbol.asyncIterator]()
+      } catch (error) {
+        // llm 服务还没就绪时这里是同步抛的，旧写法也一样进不了流。
+        failedEarly = failureFrame(error, 'PEERSHARE_STREAM_FAILED')
+      }
+      while (failedEarly === null && !headSent && pending.length < MAX_HEAD_FRAMES) {
+        let next
+        try {
+          next = await nextFrame()
+        } catch (error) {
+          failedEarly = failureFrame(error, 'PEERSHARE_STREAM_FAILED')
+          break
+        }
+        if (next === HEAD_TIMEOUT) {
+          failedEarly = {
+            code: 'UPSTREAM_SILENT',
+            status: 504,
+            message: '上游 ' + headWaitMs + 'ms 内没有吐任何帧，按不可达处理：' + provider + '/' + model,
+            source: 'relay',
+          }
+          controller.abort('peershare head timeout')
+          break
+        }
+        headDeadline = Date.now() + headWaitMs
+        if (next.done === true) {
+          upstreamDone = true
+          break
+        }
+        pending.push(next.value)
+        const failure = inBandFailure(next.value)
+        if (failure !== null) {
+          failedEarly = failureFrame(failure, 'UPSTREAM_ERROR')
+          break
+        }
+        if (isOutput(next.value)) openHead()
+      }
+      // 攒到帧数上限仍没出货（一长串控制帧）：照常开局，别把「慢」写成「死」。
+      if (failedEarly === null && !headSent && upstreamDone) {
+        // 一帧输出都没有就结束：旧协议回 200 + end，借用方记成成功。现在它是一条 502。
+        // 代价说清楚：真·合法空回复也会被记一次 transient，但借用方拿到 0 token 本来就
+        // 等于这次调用没用，账本把它当失败比当成功诚实。
+        failedEarly = {
+          code: 'UPSTREAM_EMPTY',
+          status: 502,
+          message: '上游没有产生任何输出就结束了：' + provider + '/' + model + '（0 输出无法与失败区分）',
+          source: 'relay',
+        }
+      }
+      if (failedEarly !== null && !headSent) {
+        // 对侧已经断开时（res.close 里已经 abort 过）不再往一个死连接上写错误体，
+        // 也不把它记成「上游首块失败」—— 那是取消，不是故障。
+        if (!res.destroyed && !res.writableEnded) {
+          log('互借中继上游首块失败：' + provider + '/' + model + ' → ' + failedEarly.code + ' ' + failedEarly.message)
+          sendJson(res, failedEarly.status, { protocol: PEERSHARE_PROTOCOL, error: failedEarly })
+        }
+        return
+      }
+      openHead()
+      let pipe = true
+      for (const chunk of pending) {
+        if (!write({ type: 'chunk', chunk })) {
+          pipe = false // 对侧已经断开：别再往下游要块（abort 已在 close 监听里发过）
+          break
+        }
+      }
+
+      let outcome = 'ok'
+      let failure = null
+      if (pipe && !res.writableEnded) {
+        try {
+          for (;;) {
+            const next = await iterator.next()
+            if (next.done === true) break
+            const band = inBandFailure(next.value)
+            if (!write({ type: 'chunk', chunk: next.value })) break
+            if (band !== null) {
+              // 已经出过货，撤不回 200 了：in-band 失败原样转发，由借用方的 finish 块记账，
+              // 这里只把它记进 end 帧的 outcome，让线上协议本身可判定。
+              outcome = 'error'
+              failure = { ...failureFrame(band, 'UPSTREAM_ERROR'), kind: String(next.value?.reason?.kind ?? 'error') }
+            }
+          }
+        } catch (error) {
+          outcome = 'error'
+          failure = failureFrame(error, 'PEERSHARE_STREAM_FAILED')
+          write({ type: 'error', error: failure })
+        }
+      }
+      write({ type: 'end', outcome, ...(failure === null ? {} : { error: failure }) })
       if (!res.writableEnded) res.end()
       return
     }
