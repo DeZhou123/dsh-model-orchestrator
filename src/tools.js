@@ -51,7 +51,8 @@ export function registerAgentSurface(options) {
         'refresh —— 重新拉取实时模型清单与渠道数据；',
         'import_report —— 从磁盘上的测速报告 markdown 重新导入智力/速度优先级数据；',
         'clear_import —— 丢弃导入的优先级数据，回到插件自带的那份；',
-        'peer —— 渠道互借状态：出借端点、可借车道、借用方已注册的对侧模型（用 set 的 peerShare 字段改设置）。',
+        'peer —— 渠道互借状态：出借端点、可借车道、借用方已注册的对侧模型（用 set 的 peerShare 字段改设置）；',
+        'probe —— 定时渠道巡检：status 看上次结果与下次时间（默认每 3 天一轮），run-now 立即探一轮（会真实消耗额度）。',
         '额度耗尽、限流或渠道不可用时，会先在同一个模型的其它渠道间切换；只有整个模型都不可用才换模型。',
       ].join(' '),
       parameters: {
@@ -59,7 +60,7 @@ export function registerAgentSurface(options) {
         properties: {
           action: {
             type: 'string',
-            enum: ['status', 'explain', 'lanes', 'set', 'prefer', 'unprefer', 'refresh', 'import_report', 'clear_import', 'peer'],
+            enum: ['status', 'explain', 'lanes', 'set', 'prefer', 'unprefer', 'refresh', 'import_report', 'clear_import', 'peer', 'probe'],
             description: '要执行的操作。',
           },
           sessionId: { type: 'string', description: 'status/explain 时可指定会话；省略则用最近活跃的会话。' },
@@ -76,6 +77,7 @@ export function registerAgentSurface(options) {
           allow: { type: 'array', items: { type: 'string' }, description: 'set：即使在内置黑名单里也允许动用。' },
           denyProviders: { type: 'array', items: { type: 'string' }, description: 'set：排除整个车道。' },
           path: { type: 'string', description: 'import_report：测速报告 markdown 的绝对路径。' },
+          probeMode: { type: 'string', enum: ['status', 'run-now'], description: 'probe：status 只读查看；run-now 立即探活一轮（真实消耗额度）。' },
           peerShare: {
             type: 'object',
             description: 'set：渠道互借设置（enabled/role/host/port/token/peerUrl/peerToken/peerProvider/borrowWhen/allowProviders/denyProviders）。'
@@ -135,6 +137,11 @@ export function registerAgentSurface(options) {
             return api.clearImport()
           case 'peer':
             return api.peer()
+          case 'probe': {
+            // status 只读；run-now 会真的发请求、花额度，必须显式要求。
+            const probeMode = String(args?.probeMode ?? 'status')
+            return api.probe({ action: probeMode })
+          }
           default:
             return { ok: false, error: 'unknown action "' + action + '"' }
         }

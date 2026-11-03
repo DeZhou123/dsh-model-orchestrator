@@ -13,6 +13,10 @@
  *      并且借用方的健康账本要记成 errors+1、status 不为 ok —— aborted 例外：用户按停止
  *      是「我们的请求的事」，账本必须记成 lane innocent（errors 不涨、车道仍判 ok）。
  *      出过货之后的失败仍走 200 NDJSON，而且只报一次（不双计）。
+ *   8. （2026-11-03 卡 peer-borrow-zero-output-borrower-guard）上一条要**对端先升级**才算数；
+ *      对端仍是旧形状（200 + 一帧 end、零 chunk）时，借用方自己必须把这一发判成失败：
+ *      账本 errors+1、status 不为 ok；同一夹具下正常出货仍判 ok，aborted 仍走 lane innocent。
+ *      这一条夹具就地仿出旧形状，不启动、也不重启任何实例。
  *
  * 用法：node tools/peershare-smoke.mjs
  */
@@ -493,6 +497,87 @@ const emptyRun = await borrowOnce('empty')
 assert.ok(!(emptyRun.entry.counters.calls === 1 && emptyRun.entry.counters.errors === 0), '0 输出绝对不能再记成「成功但 0 输出」');
 ok('反证：0 输出不再产生 calls+1/errors=0 的成功记录', emptyRun.entry.counters);
 await relay.close();
+mode = 'ok'
+
+console.log('[8] 对端还是旧形状（200 + 一帧 end、零 chunk）时，借用方自己判失败');
+// 卡 peer-borrow-zero-output-borrower-guard（2026-11-03）。
+//
+// 上一张卡把「首块即失败」抬进了 HTTP 状态，但那条**要出借端先升级**才生效：本机 A（18326）
+// 是按旧代码起的进程，对每一次借道调用仍在 t=0 就回 200。所以「上游 0 帧」在线上和「正常回包」
+// 长得一模一样 —— 都是 200，只是中间一帧 chunk 都没有。这一段就仿出那个旧形状：一个只回
+// 200 + 一帧 end 的假出借方，**就地起一个 HTTP 端点**，不启动、不重启任何实例，也不看对端版本。
+//
+// 判据是借用方的账本（不是线上状态码）：这一发必须 errors+1、status 不为 ok；同一夹具下正常
+// 出货仍判 ok；aborted 仍走 lane innocent —— 反面一起钉住，否则「修好了」可能只是把取消也算成故障。
+let oldShapeMode = 'zero'
+const oldShape = http.createServer(async (req, res) => {
+  if (req.method === 'GET' && req.url === '/peershare/v1/models') {
+    const body = JSON.stringify({
+      protocol: PEERSHARE_PROTOCOL,
+      count: 1,
+      models: [{ provider: 'raccoon', model: 'sn-glm-5-3', id: RELAY_MODEL, name: 'GLM-5.3', modelName: 'GLM-5.3' }],
+    })
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body) })
+    res.end(body)
+    return
+  }
+  if (req.method === 'POST' && req.url === '/peershare/v1/stream') {
+    for await (const _part of req) void _part // 请求体读干净，别让连接半开
+    // 旧代码的形状：头在 t=0 就发出去了 —— 上游能不能出货它这时候并不知道。
+    res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store' })
+    const frame = (value) => res.write(JSON.stringify(value) + '\n')
+    if (oldShapeMode === 'ok') {
+      for (const chunk of chunks) frame({ type: 'chunk', chunk })
+    } else if (oldShapeMode === 'aborted') {
+      frame({ type: 'chunk', chunk: { type: 'finish', reason: { kind: 'aborted' } } })
+    }
+    // 'zero'：一帧 chunk 都不发，直接收尾 —— 这就是「死车道」在旧协议上的原样。
+    frame({ type: 'end' }) // 旧形状的 end 帧没有 outcome 字段
+    res.end()
+    return
+  }
+  res.writeHead(404)
+  res.end()
+})
+await new Promise((resolve, reject) => {
+  oldShape.once('error', reject)
+  oldShape.listen(0, '127.0.0.1', resolve)
+})
+const oldBase = 'http://127.0.0.1:' + oldShape.address().port
+
+oldShapeMode = 'zero'
+const oldZero = await borrowOnce('ok', oldBase) // 第二参数换端点；mode 只喂给上一节的假上游
+assert.equal(oldZero.seen.length, 0, '夹具必须真的是零 chunk，否则下面两条断言是空炮');
+assert.equal(oldZero.caught, null, '旧形状线上是 200 + end：调用方拿不到异常，这正是它危险的地方');
+assert.ok(oldZero.entry !== null, '零输出的一发必须在账本里留下 peer/* 条目');
+assert.equal(oldZero.entry.counters.errors, 1, '旧形状 + 零输出：errors 要 +1，不能再是 0');
+assert.notEqual(oldZero.entry.status, 'ok', '零输出跑完不能记成 status=ok（死车道在账本里必须看得见）');
+ok('账本 旧形状零输出 → errors+1 / status=' + oldZero.entry.status, oldZero.entry.counters);
+
+oldShapeMode = 'ok'
+const oldOk = await borrowOnce('ok', oldBase)
+assert.equal(oldOk.caught, null);
+assert.deepEqual(oldOk.seen, chunks, '同一夹具正常出货时 chunk 仍要逐块无损');
+assert.equal(oldOk.entry.counters.calls, 1);
+assert.equal(oldOk.entry.counters.errors, 0);
+assert.equal(oldOk.entry.status, 'ok', '同一夹具正常出货必须仍判 ok —— 否则这条兜底会把健康车道一起打死');
+ok('同一夹具正常出货仍判 ok / errors=0', oldOk.entry.counters);
+
+oldShapeMode = 'aborted'
+// 旧形状的 aborted 是**转发过来的 finish 块**，不是抛错：线上仍是 200，adapter 原样吐出来。
+// 这一发在借用方是 agent 环路的调用（带 sessionId、无 purpose），失败由 agent/request-error 记，
+// observe.js 只上报不记账；而零输出兜底必须**排在 error/aborted 分支之后**，不能替它记账。
+const oldAbort = await borrowOnce('ok', oldBase)
+assert.equal(oldAbort.caught, null, '旧形状的 aborted 走 200 NDJSON：调用方拿到的是 finish 块，不是异常');
+assert.deepEqual(oldAbort.seen.at(-1), { type: 'finish', reason: { kind: 'aborted' } }, '取消要以 finish(kind=aborted) 原样到达借用方');
+const abortErrors = oldAbort.entry === null ? 0 : oldAbort.entry.counters.errors
+assert.equal(abortErrors, 0, '取消是「我们的请求的事」：零输出兜底不能把它也记成车道的错');
+assert.ok(oldAbort.entry === null || oldAbort.entry.status === 'ok', '取消不能把车道判成非 ok');
+ok('旧形状 aborted → lane innocent（errors=' + abortErrors + ' / status='
+  + (oldAbort.entry === null ? '(无条目，只有一次调用被取消)' : oldAbort.entry.status) + '）', oldAbort.seen.at(-1));
+
+await new Promise(resolve => oldShape.close(resolve))
+oldShapeMode = 'ok'
 mode = 'ok'
 
 console.log('');

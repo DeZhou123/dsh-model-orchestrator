@@ -388,6 +388,28 @@ export const DEFAULT_CONFIG = {
   requestRepeatWindowMs: REQUEST_REPEAT.windowMs,
   /** How long a lane parked for repeated rejections stays out of the ranking. */
   requestRepeatBlockMs: REQUEST_REPEAT.blockMs,
+  /**
+   * 定时渠道巡检（2026-11-03）。
+   *
+   * 为什么需要它：免费车道会「静默死亡」——cline 的 402 额度耗尽、our-free-model
+   * 的免费层永久限流、某渠道悄悄把模型下架。这些只有「被选中并失败一次」之后
+   * health 账本才会知道；若很久没人选它，面板上的"可用"就是假的。
+   * 打开后按间隔主动探一遍，把结果写回账本（见 src/probe.js）。
+   *
+   * 默认三天一次：探活本身要花额度，太勤等于替用户烧钱；太疏则账本又失真。
+   * 首轮延迟 10 分钟，避免启动瞬间和用户正在进行的会话抢额度。
+   */
+  probeEnabled: true,
+  /** 间隔（天）。被 probeIntervalMs 覆盖。 */
+  probeEveryDays: 3,
+  /** 间隔（毫秒）。给 0 或负数时回落到 probeEveryDays。 */
+  probeIntervalMs: 0,
+  /** 单条车道的探测超时。 */
+  probeTimeoutMs: 20_000,
+  /** 一轮内同时探测几条。 */
+  probeConcurrency: 2,
+  /** 首轮延迟，避开启动时的会话。 */
+  probeFirstDelayMs: 10 * 60_000,
   /** Load the priority report from this path on start; empty disables it. */
   reportPath: '',
   /**

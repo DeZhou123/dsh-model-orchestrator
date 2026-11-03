@@ -473,6 +473,25 @@ node tools/peershare-smoke.mjs   # 21 条断言：鉴权/协议/回环/清单/�
 | `modelInfoTtlMs` | `21600000` | 模型元数据缓存时长。 |
 | `usageUnitTokens` | `2000000` | 用量项的参考规模。 |
 | `reportPath` | `''` | 启动时自动导入这份报告。 |
+| `probeEnabled` | `true` | 定时渠道巡检开关。 |
+| `probeEveryDays` | `3` | 巡检间隔（天）。被 `probeIntervalMs` 覆盖。 |
+| `probeIntervalMs` | `0` | 巡检间隔（毫秒）。`>0` 时优先于 `probeEveryDays`。 |
+| `probeTimeoutMs` | `20000` | 单条车道的探测超时。 |
+| `probeConcurrency` | `2` | 一轮内同时探测几条车道。 |
+| `probeFirstDelayMs` | `600000` | 首轮延迟（10 分钟），避开启动时的会话。 |
+
+### 定时渠道巡检（`probe`）
+
+免费车道会「静默死亡」：某个渠道 402 额度耗尽、某个免费层永久限流、某个模型悄悄下架。
+这些只有**被选中并失败一次**之后健康账本才会知道——若很久没人选它，面板上的「可用」就是假的。
+
+`probe` 按间隔把所有未 deny 的车道主动探一遍，把结果写回同一本账（`health.json`）：
+
+- **默认三天一次**。探活要花额度，太勤等于替用户烧钱；太疏账本又失真。
+- **冷却未到期的车道直接跳过**：它本来就不会被选中，探了只是白烧额度。
+- **探活请求带 `purpose='probe'`**，不计入会话的 `turnTokenBudget`。
+- **单条独立超时 + 并发上限**：一条挂死不拖垮整轮。
+- 关掉：`probeEnabled: false`；立即跑一轮：`model_orchestrator action=probe probeMode=run-now`。
 
 **旧键兼容**：`pinProvider`/`pinModel` 会被折叠成 `preferModel`/`preferProvider`，并把 `auto` 改为 `prefer`。
 

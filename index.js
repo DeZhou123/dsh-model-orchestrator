@@ -48,6 +48,7 @@ import { installHttpApi } from './src/http.js'
 import { registerAgentSurface } from './src/tools.js'
 import { datasetFromReport } from './src/report-import.js'
 import { resolveConfig, sanitizePatch } from './src/config.js'
+import { createProbe, resolveIntervalMs } from './src/probe.js'
 
 export const name = 'model-orchestrator'
 
@@ -302,6 +303,12 @@ export function apply(ctx, rawConfig = {}) {
     throw new Error('llm 服务尚未就绪')
   }
 
+  /**
+   * llm 服务是否已挂上。探活依赖它：服务缺席时 listLanes 返回空，
+   * 一轮探活没有目标就会立刻结束 —— 那比拿一个会抛的 llmStream 去打每条车道好得多。
+   */
+  let llmReady = false
+
   /** 借用方：把对侧端点注册成一条 provider。 */
   function syncPeerBorrower() {
     const peer = peerConfig()
@@ -347,9 +354,11 @@ export function apply(ctx, rawConfig = {}) {
 
   ctx.inject(['llm'], (scoped) => {
     llmStream = (request) => scoped.llm.stream(request)
+    llmReady = true
     syncPeerServer().catch(() => {})
     syncPeerBorrower()
     return () => {
+      llmReady = false
       llmStream = () => {
         throw new Error('llm 服务已卸载')
       }
@@ -553,6 +562,89 @@ export function apply(ctx, rawConfig = {}) {
       'model-orchestrator: housekeeping',
     )
   })
+
+  // ── 定时渠道巡检（2026-11-03）───────────────────────────────────────────────
+  //
+  // 免费车道会静默死亡：某个渠道 402 额度耗尽、某个免费层永久限流、某个模型悄悄
+  // 下架。这些只有"被选中并失败一次"之后账本才会知道；很久没人选它，面板上的
+  // 「可用」就是假的。这一段按间隔主动探一遍，把结果写回同一本账。
+  //
+  // 三条不能松的约束：
+  //  1. 探活请求带 purpose='probe'，observer 的 onSample 对它早退，所以绝不进会话
+  //     的 turnTokenBudget；
+  //  2. 冷却未到期的车道直接跳过 —— 它本来就不会被选，探了只白烧额度；
+  //  3. 单条独立超时 + 并发上限，一条挂死不拖垮整轮。
+  const probe = createProbe({
+    getConfig: () => runtime.config,
+    listLanes: async () => {
+      if (!llmReady) return []
+      const rows = catalog.current.rows ?? []
+      const out = []
+      for (const row of rows) {
+        if (row === null || row === undefined || row.denied === true) continue
+        const provider = String(row.provider ?? '')
+        const model = String(row.model ?? '')
+        if (provider === '' || model === '') continue
+        out.push({ provider, model })
+      }
+      return out
+    },
+    health,
+    /**
+     * 发一个最小请求。只关心「这车道活不活、首字多久」——
+     * 输出内容一律丢弃，token 已经花掉，留着也没用。
+     */
+    probeOne: async (lane, signal) => {
+      const startedAt = Date.now()
+      let ttftMs = 0
+      let inputTokens = 0
+      let outputTokens = 0
+      const request = {
+        provider: lane.provider,
+        model: lane.model,
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+        maxTokens: 8,
+        signal,
+        purpose: 'probe',
+      }
+      const stream = llmStream(request)
+      for await (const chunk of stream) {
+        if (ttftMs === 0 && (chunk?.type === 'text-delta' || chunk?.type === 'reasoning-delta' || chunk?.type === 'tool-call-delta')) {
+          ttftMs = Date.now() - startedAt
+        }
+        if (chunk?.type === 'finish' && chunk.reason?.kind === 'error') {
+          const failure = chunk.reason.failure ?? {}
+          throw Object.assign(new Error(String(failure.message ?? '探活失败')), { code: String(failure.code ?? 'PROBE') })
+        }
+        if (chunk?.type === 'usage') {
+          inputTokens = Number(chunk.inputTokens ?? inputTokens)
+          outputTokens = Number(chunk.outputTokens ?? outputTokens)
+        }
+        // 首字到手就算活：探活没有理由等模型把话说完。
+        if (ttftMs > 0) break
+      }
+      return { ttftMs: ttftMs > 0 ? ttftMs : Date.now() - startedAt, inputTokens, outputTokens }
+    },
+    clock: () => Date.now(),
+    logger: ctx.logger,
+  })
+
+  ctx.effect(() => {
+    const stop = probe.start((tick) => {
+      // 每一轮自己排下一轮：间隔按实时配置重算，面板改了值下一轮就生效。
+      const timer = setTimeout(tick, Math.max(60_000, resolveIntervalMs(runtime.config)))
+      timer.unref?.()
+    })
+    const summary = probe.status()
+    ctx.logger?.info?.(
+      'model-orchestrator: 渠道巡检已挂载，间隔 '
+      + summary.intervalDays + ' 天，超时 ' + summary.timeoutMs + 'ms，并发 ' + summary.concurrency,
+    )
+    return () => {
+      stop()
+      ctx.logger?.info?.('model-orchestrator: 渠道巡检已停止')
+    }
+  }, 'model-orchestrator: lane probe')
 
   // ── notifications ─────────────────────────────────────────────────────────
   function notify(title, body) {
@@ -1587,6 +1679,21 @@ export function apply(ctx, rawConfig = {}) {
 
     /** 互借状态（面板与工具共用）。 */
     peer: () => ({ ok: true, peer: peerView() }),
+
+    /**
+     * 渠道巡检的对外入口。
+     *
+     * `status` 只读，随时可调；`run-now` 会真的发请求、花额度，所以它不在这里
+     * 自动触发——只有面板点按或工具显式调用才会跑。
+     */
+    probe: async (options = {}) => {
+      const action = String(options.action ?? 'status')
+      if (action === 'run-now') {
+        const summary = await probe.runOnce({ force: true })
+        return { ok: true, summary, status: probe.status() }
+      }
+      return { ok: true, status: probe.status() }
+    },
 
     /** 主动重拉对侧清单（借用方）。 */
     peerRefresh: async () => {

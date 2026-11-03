@@ -15,6 +15,14 @@
  *     outside the agent loop (title, compaction, a probe), which have no
  *     `agent/request-error` at all.
  *
+ * A third shape needed a verdict of its own, and it is the only one that does
+ * not need the peer to cooperate (see {@link carriesOutput}): a call that runs
+ * to completion and streams **nothing at all** — zero output frames, no error
+ * finish, just a clean end. An old lend-side that still answers `200` at t=0
+ * (before it knows whether the upstream can produce anything) reports exactly
+ * that shape, and it used to be booked as `calls+1 / errors=0 / status=ok`:
+ * a dead lane that looks perfectly healthy in the ledger.
+ *
  * @module src/observe
  */
 
@@ -34,6 +42,56 @@ function failureOf(error) {
 function isFirstFrame(chunk) {
   return chunk?.type === 'text-delta' || chunk?.type === 'reasoning-delta' || chunk?.type === 'tool-call-delta'
 }
+
+/**
+ * Whether a chunk delivered any model output at all.
+ *
+ * Deliberately broader than {@link isFirstFrame}, which is a latency clock and
+ * therefore fires on the *first* delta frame whatever it carries. This predicate
+ * decides a ledger verdict, so it must never call a call empty that actually
+ * delivered something:
+ *
+ *   - `text-delta` / `reasoning-delta` count only with a non-empty string, the
+ *     same rule the harness's own `isTokenDelta` uses;
+ *   - `tool-call-delta` counts when it names the call or carries argument bytes
+ *     (a name-only frame is how a tool call starts on the DeepSeek adapter);
+ *   - a `block-end` counts when it closes a block that has content, because an
+ *     adapter is allowed to buffer and emit whole blocks instead of deltas.
+ *
+ * `block-start`, `usage` and `finish` are control frames: a stream made only of
+ * those produced nothing a caller could act on.
+ */
+function carriesOutput(chunk) {
+  switch (chunk?.type) {
+    case 'text-delta':
+    case 'reasoning-delta':
+      return typeof chunk.text === 'string' && chunk.text !== ''
+    case 'tool-call-delta':
+      return (typeof chunk.argumentsDelta === 'string' && chunk.argumentsDelta !== '') || typeof chunk.name === 'string'
+    case 'block-end': {
+      const block = chunk.block
+      if (block === null || typeof block !== 'object') return false
+      if (block.type === 'text' || block.type === 'reasoning') return typeof block.text === 'string' && block.text !== ''
+      return block.type === 'tool-call'
+    }
+    default:
+      return false
+  }
+}
+
+/**
+ * The failure booked for a call that finished without a single output frame.
+ *
+ * `EMPTY_RESPONSE` is the harness's own provider-neutral code for "completed
+ * normally but carried no content", and `health.js` files it as a model-scoped
+ * transient — a bounded backoff that reroutes the next step instead of parking
+ * the whole lane until midnight. A zero-output call is exactly that: the tokens
+ * were spent (or the far side died) and the caller received nothing.
+ */
+const ZERO_OUTPUT_FAILURE = Object.freeze({
+  code: 'EMPTY_RESPONSE',
+  message: '这一发跑完但一帧输出都没有：没有文本、没有推理、也没有工具调用',
+})
 
 /**
  * Create the observer.
@@ -75,6 +133,17 @@ export function createObserver(options) {
     let usage = null
     let finish = null
     let sawReasoning = false
+    /**
+     * Whether this call delivered anything at all (see {@link carriesOutput}).
+     *
+     * Tracked separately from `firstFrameAt` on purpose: that one is the
+     * time-to-first-token clock, this one decides the ledger verdict. They
+     * disagree exactly where the borrower-side guard matters — a stream of
+     * control frames, or a stream of nothing, has no `firstFrameAt` and no
+     * output, while a call that emitted only `block-start` + `finish` still
+     * has no output even though it "ran".
+     */
+    let sawOutput = false
 
     try {
       for await (const chunk of stream) {
@@ -82,6 +151,7 @@ export function createObserver(options) {
         if (firstFrameAt === null && isFirstFrame(chunk)) firstFrameAt = now
         if (firstVisibleAt === null && (chunk?.type === 'text-delta' || chunk?.type === 'tool-call-delta')) firstVisibleAt = now
         if (chunk?.type === 'reasoning-delta') sawReasoning = true
+        if (!sawOutput && carriesOutput(chunk)) sawOutput = true
         if (chunk?.type === 'usage') usage = chunk.usage ?? null
         if (chunk?.type === 'finish') finish = chunk.reason ?? null
         yield chunk
@@ -114,6 +184,52 @@ export function createObserver(options) {
           sessionId: callOptions?.sessionId,
           purpose: callOptions?.purpose,
           thrown: false,
+        })
+        return
+      }
+      /**
+       * ── zero-output guard: 跑完了却一帧输出都没有 ──────────────────────────
+       *
+       * This is the borrower-side backstop for the shape an **old** lend-side
+       * still produces (peer-borrow-zero-output-borrower-guard, 2026-11-03).
+       * A relay that answers `200` before it knows whether the upstream can
+       * produce anything reports "clean end, zero chunks" for a dead lane; a
+       * relay that has been fixed reports a real HTTP status instead, and the
+       * adapter throws, which is handled above. Waiting for the far side to be
+       * upgraded leaves this box blind for however long the upgrade takes, so
+       * the verdict is made here, from the stream alone.
+       *
+       * The rule: a call with **no output at all** is not a success. It is
+       * booked as `EMPTY_RESPONSE` — the harness's own code for "completed
+       * normally but carried no content" — which `health.js` files as a
+       * model-scoped transient: errors+1, a bounded cooldown, and the next step
+       * reroutes around the dead lane. Recording it as `status=ok` instead is
+       * how a dead lane stayed invisible in the ledger.
+       *
+       * Deliberately *after* the error/aborted branch: a cancelled call is the
+       * user's own doing (`health.js` has `ABORTED` in `REQUEST_CODES` and must
+       * leave the lane innocent), and an error finish already carries a better
+       * code than this one. Counting either again here would double-book it.
+       *
+       * Unlike the in-band failure branch there is no `agentLoopCall` exemption
+       * here, and none is needed: a stream that ends with `stop` and no output
+       * never reaches `agent/request-error` at all, so this is the only place
+       * the ledger can learn about it.
+       */
+      if (!sawOutput) {
+        const failure = {
+          code: ZERO_OUTPUT_FAILURE.code,
+          message: ZERO_OUTPUT_FAILURE.message + '：' + (provider === '' ? '?' : provider) + '/' + (model === '' ? '?' : model),
+        }
+        health.markFailure(provider, model, failure)
+        options.onFailure?.({
+          provider,
+          model,
+          failure,
+          sessionId: callOptions?.sessionId,
+          purpose: callOptions?.purpose,
+          thrown: false,
+          empty: true,
         })
         return
       }

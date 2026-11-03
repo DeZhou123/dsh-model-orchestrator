@@ -30,6 +30,7 @@ export const MUTABLE_KEYS = [
   'routeSubagents', 'adoptUserSelection', 'routeFirstTurn', 'autoSelect', 'reasoningEffort', 'catalogRefreshMs',
   'channelDataRefreshMs', 'modelInfoTtlMs', 'catalogTimeoutMs', 'usageUnitTokens',
   'channelData', 'freeModelData', 'laneGuard', 'duoPeers', 'peerShare',
+  'probeEnabled', 'probeEveryDays', 'probeIntervalMs', 'probeTimeoutMs', 'probeConcurrency', 'probeFirstDelayMs',
 ]
 
 /**
@@ -189,6 +190,15 @@ export function resolveConfig(raw, overrides) {
     routeFirstTurn: pick(merged, DEFAULT_CONFIG, 'routeFirstTurn', isBool),
     autoSelect: pick(merged, DEFAULT_CONFIG, 'autoSelect', isBool),
     reasoningEffort: pick(merged, DEFAULT_CONFIG, 'reasoningEffort', isString).trim(),
+    // 定时渠道巡检（2026-11-03）。开关与间隔都走 pick，面板/工具随时可改；
+    // 间隔的计算留在 src/probe.js 的 resolveIntervalMs 里，这里只做类型收敛，
+    // 免得同一个「3 天 / 259200000ms」的换算写两遍。
+    probeEnabled: pick(merged, DEFAULT_CONFIG, 'probeEnabled', isBool),
+    probeEveryDays: Math.max(0, pick(merged, DEFAULT_CONFIG, 'probeEveryDays', isNumber)),
+    probeIntervalMs: Math.max(0, pick(merged, DEFAULT_CONFIG, 'probeIntervalMs', isNumber)),
+    probeTimeoutMs: Math.max(1_000, pick(merged, DEFAULT_CONFIG, 'probeTimeoutMs', isNumber)),
+    probeConcurrency: Math.min(8, Math.max(1, pick(merged, DEFAULT_CONFIG, 'probeConcurrency', isNumber))),
+    probeFirstDelayMs: Math.max(0, pick(merged, DEFAULT_CONFIG, 'probeFirstDelayMs', isNumber)),
     catalogRefreshMs: Math.max(15_000, pick(merged, DEFAULT_CONFIG, 'catalogRefreshMs', isNumber)),
     persistIntervalMs: Math.max(5_000, pick(merged, DEFAULT_CONFIG, 'persistIntervalMs', isNumber)),
     channelDataRefreshMs: Math.max(5_000, pick(merged, DEFAULT_CONFIG, 'channelDataRefreshMs', isNumber)),
