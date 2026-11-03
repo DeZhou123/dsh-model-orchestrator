@@ -44,6 +44,15 @@ const HEAD_WAIT_MS = 120_000
 /** Promise.race 的哨兵：区分「拿到帧」与「超时」。 */
 const HEAD_TIMEOUT = Symbol('peershare-head-timeout')
 
+/**
+ * 关闭端点时给在途请求的体面期，之后强制掐断连接。
+ *
+ * 太短会把正在流式输出的借用请求拦腰砍断；太长则 HMR reload 的 stop→start 窗口
+ * 里端口一直是死的（借用方看到的是 ECONNREFUSED）。2 秒是「一次正常响应早已开始
+ * 推送」与「端点不该消失」之间的折中。
+ */
+const CLOSE_GRACE_MS = 2_000
+
 /** 回环标记头：出现即说明这条请求已经被中继过一次。 */
 const HOP_HEADER = 'x-peershare-hop'
 
@@ -480,8 +489,29 @@ export async function startPeerShareServer(options) {
   return {
     host: address?.address ?? host,
     port: address?.port ?? 0,
+    /**
+     * 关端点。**必须能在有活动连接时也返回**。
+     *
+     * 实测事故（2026-11-04 00:06）：A 侧 HMR 每次 reload 都会 stop → start 一遍端点，
+     * 而 `server.close()` 的回调只在**所有连接关闭后**才调用。借用方的 keep-alive
+     * 连接一直挂着，于是这个 Promise 永不 resolve → `await stopPeerServer()` 卡死 →
+     * 后面那句 `startPeerShareServer` 永远走不到 → 18326 端口从此消失（日志停在
+     * 「已监听 0.0.0.0:18326」，之后 B 侧 35 次 ECONNREFUSED）。旧代码之所以没暴露，
+     * 是因为以前几乎不 reload。
+     *
+     * 所以：先正常关，给在途请求一个很短的体面期；到点还在就掐断连接。
+     */
     async close() {
-      await new Promise((resolve) => server.close(resolve))
+      const closed = new Promise((resolve) => server.close(resolve))
+      const forced = new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          // closeAllConnections 只在 Node >= 18.2 有；没有就退化为「已经尽力」。
+          server.closeAllConnections?.()
+          resolve()
+        }, CLOSE_GRACE_MS)
+        timer.unref?.()
+      })
+      await Promise.race([closed, forced])
     },
   }
 }

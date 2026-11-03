@@ -245,6 +245,8 @@ export function apply(ctx, rawConfig = {}) {
     borrower: null,
     tokenInfo: null,
   }
+  /** 防止看门狗与配置变更同时重起端点（syncPeerServer 自己不做并发保护）。 */
+  let peerSyncInFlight = false
 
   function peerConfig() {
     const peer = runtime.config.peerShare ?? DEFAULT_CONFIG.peerShare
@@ -268,16 +270,36 @@ export function apply(ctx, rawConfig = {}) {
     })
   }
 
-  /** 关掉正在跑的中继（幂等）。 */
+  /**
+   * 关掉正在跑的中继（幂等）。
+   *
+   * 这里**必须**有超时兜底：调用它的路径是「HMR reload → dispose → stop → start」，
+   * 一次卡住就意味着端点永久消失，而不是重起一次。2026-11-04 00:06 实测过这个形状：
+   * `server.close()` 的回调等所有连接断开，借用方的 keep-alive 连接一直挂着，Promise
+   * 永不 resolve，18326 从日志里静默消失（B 侧 35 次 ECONNREFUSED）。close() 自身已补
+   * 强制掐断，这里是第二道闸——配置改坏或将来换实现时，也不能把端点挂死。
+   */
   async function stopPeerServer() {
     const server = peerState.server
     peerState.server = null
     peerState.serverInfo = null
     if (server === null) return
-    try {
-      await server.close()
-    } catch (error) {
-      ctx.logger?.warn?.('model-orchestrator: 关闭互借中继失败 — ' + (error instanceof Error ? error.message : String(error)))
+    const closed = (async () => {
+      try {
+        await server.close()
+      } catch (error) {
+        ctx.logger?.warn?.('model-orchestrator: 关闭互借中继失败 — ' + (error instanceof Error ? error.message : String(error)))
+      }
+    })()
+    let timer = null
+    const guard = new Promise((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), 5_000)
+      timer.unref?.()
+    })
+    const outcome = await Promise.race([closed.then(() => 'closed'), guard])
+    if (timer !== null) clearTimeout(timer)
+    if (outcome === 'timeout') {
+      ctx.logger?.warn?.('model-orchestrator: 关闭互借中继超时（5s），继续重起以免端点消失')
     }
   }
 
@@ -579,6 +601,20 @@ export function apply(ctx, rawConfig = {}) {
         if (now - lastPersistAt >= runtime.config.persistIntervalMs) {
           health.persist()
           lastPersistAt = now
+        }
+        // 出借端点的看门狗（2026-11-04）。端点「悄悄没了」是最贵的一种坏：
+        // 日志里停在「已监听」，本机一切正常，只有对侧看到 ECONNREFUSED。
+        // 判据只认状态位，不猜原因：该有端点却没有 → 重起一次（syncPeerServer
+        // 自身幂等，已经在跑就什么都不做）。
+        if (peerState.server === null && llmReady && !peerSyncInFlight) {
+          const peer = peerConfig()
+          const wanted = peer.enabled === true && (peer.role === 'both' || peer.role === 'lend')
+          if (wanted) {
+            peerSyncInFlight = true
+            syncPeerServer()
+              .catch(() => {})
+              .finally(() => { peerSyncInFlight = false })
+          }
         }
       }, 15_000),
       'model-orchestrator: housekeeping',
