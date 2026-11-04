@@ -142,6 +142,37 @@ window.__ModuleLoader__.load({
       tabLanes: '渠道',
       tabLog: '记录',
       tabSettings: '设置',
+      tabProbe: '巡检',
+      probeTitle: '渠道巡检',
+      probeHint: '按间隔主动探一遍所有未停用车道，结果写回同一本健康账；探活请求不计入会话 token 预算。',
+      probeOn: '巡检开启',
+      probeOff: '巡检关闭',
+      probeInterval: '间隔',
+      probeDays: '天',
+      probeRunNow: '立即跑一轮',
+      probeRunning: '探测中…',
+      probeLast: '上次',
+      probeNext: '下次',
+      probeLater: '后',
+      probeIdle: '未排下一轮',
+      probeDuration: '耗时',
+      probeRounds: '已跑轮次',
+      probeTimeout: '单条超时',
+      probeConcurrency: '并发',
+      probeBorrowed: '也探借入车道',
+      probeBorrowedHint: '默认不探：借入车道的好坏由对侧自己维护。',
+      probeResults: '本轮结果',
+      probeTruncated: '仅列前',
+      probeVerdict: '结果',
+      probePass: '通过',
+      probeFail: '失败',
+      probeSkip: '跳过',
+      probeReason: '原因',
+      probeMs: '耗时 ms',
+      probeReasons: '失败归因',
+      probeNever: '还没跑过',
+      probeCost: '探活会真实消耗渠道额度，所以默认三天一轮。',
+      probeUnavailable: 'Host 未提供巡检数据：宿主半身是旧版本，或改完还没重启 DSH。',
       topModels: '策略排名前 4',
       preferHint: '点 ★ 设为偏好',
       firstTurn: '首轮接管',
@@ -265,6 +296,37 @@ window.__ModuleLoader__.load({
       tabLanes: 'Channels',
       tabLog: 'Log',
       tabSettings: 'Settings',
+      tabProbe: 'Probe',
+      probeTitle: 'Lane probe',
+      probeHint: 'Actively probes every enabled lane on a schedule and writes the verdicts back into the same health ledger. Probe requests never count against the turn token budget.',
+      probeOn: 'Probe on',
+      probeOff: 'Probe off',
+      probeInterval: 'Every',
+      probeDays: ' d',
+      probeRunNow: 'Probe now',
+      probeRunning: 'Probing…',
+      probeLast: 'Last',
+      probeNext: 'Next in',
+      probeLater: '',
+      probeIdle: 'no round scheduled',
+      probeDuration: 'took',
+      probeRounds: 'rounds',
+      probeTimeout: 'timeout',
+      probeConcurrency: 'concurrency',
+      probeBorrowed: 'Probe borrowed lanes too',
+      probeBorrowedHint: 'Off by default: borrowed lanes are the peer instance’s business.',
+      probeResults: 'This round',
+      probeTruncated: 'showing first',
+      probeVerdict: 'Verdict',
+      probePass: 'pass',
+      probeFail: 'fail',
+      probeSkip: 'skip',
+      probeReason: 'Reason',
+      probeMs: 'ms',
+      probeReasons: 'Failures',
+      probeNever: 'never run',
+      probeCost: 'Probing really spends channel quota, so the default is once every three days.',
+      probeUnavailable: 'Host offers no probe data: the host half is an older build, or DSH has not been restarted since the change.',
       topModels: 'Top 4 by strategy',
       preferHint: 'Click ★ to prefer',
       firstTurn: 'Take over turn 1',
@@ -438,6 +500,13 @@ window.__ModuleLoader__.load({
       return Math.round(minutes / 60) + 'h'
     }
 
+    /** Format an epoch as a wall-clock time, or an em dash when there never was one. */
+    function fmtClock(ms) {
+      const value = Number(ms ?? 0)
+      if (!Number.isFinite(value) || value <= 0) return '—'
+      return new Date(value).toLocaleTimeString()
+    }
+
     /** Human status label for one health verdict. */
     function statusLabel(t, status) {
       return t(STATUS_KEY[status] ?? 'unknown')
@@ -594,7 +663,7 @@ window.__ModuleLoader__.load({
      * answers "what is running and what runs next" without scrolling at all.
      */
     function Panel(props) {
-      const { t, data, busy, onConfig, onRefresh, error, onPreferChange, onClose, sessionId } = props
+      const { t, data, busy, onConfig, onRefresh, error, onPreferChange, onClose, sessionId, onProbeRun } = props
       const [tab, setTab] = React.useState('overview')
       const [pickerOpen, setPickerOpen] = React.useState(false)
       // The preference list has to cover every family, which `summary.groups` does
@@ -612,6 +681,22 @@ window.__ModuleLoader__.load({
       const channelData = data?.channelData ?? { available: false }
       // 渠道互借状态（出借端点 / 可借车道 / 借用方）。Host 没给就当未启用。
       const peer = data?.peer ?? null
+      // 定时渠道巡检。宿主半身若是旧版本（改完没重启），这里拿到 undefined ——
+      // 整页照常渲染，只把这一块标成不可用，而不是让整个面板炸掉。
+      const probe = data?.probe ?? null
+      const probeResults = Array.isArray(probe?.results) ? probe.results : []
+      const probeCounts = probe?.counts ?? { total: 0, ok: 0, failed: 0, skipped: 0 }
+      // 失败原因按原文聚一次：一轮几十条里往往只有两三种原因，「14× 冷却中」比
+      // 逐行读 14 遍更快看出发生了什么。
+      const probeReasons = (() => {
+        const tally = new Map()
+        for (const row of probeResults) {
+          if (row?.ok !== false) continue
+          const key = String(row.error ?? '').trim() || '—'
+          tally.set(key, (tally.get(key) ?? 0) + 1)
+        }
+        return [...tally.entries()].sort((left, right) => right[1] - left[1]).slice(0, 5)
+      })()
       // Before the uncapped list arrives (or against an older Host that has no
       // /families route) the dialog can still show the summary's groups — strictly
       // better than an empty screen.
@@ -726,8 +811,118 @@ window.__ModuleLoader__.load({
         (catalog.failures ?? []).length === 0 ? null : h('div', { key: 'd', className: 'mo-warn' }, catalog.failures.length + ' lanes failed to list'),
       ])
 
+      // 巡检卡（概览里一眼看状态）与巡检页签（看这一轮到底探出了什么）。
+      // 两块读同一份 `probe`：一个答「现在什么状态」，一个答「结果是什么」。
+      const probeCard = h('div', { key: 'probe', className: 'mo-card' }, [
+        h('div', { key: 'a', className: 'mo-strong' }, t('probeTitle')),
+        probe === null
+          ? h('div', { key: 'na', className: 'mo-note' }, t('probeUnavailable'))
+          : [
+            h('div', { key: 'b', className: 'mo-note' }, (probe.enabled === false ? t('probeOff') : t('probeOn'))
+              + ' · ' + t('probeInterval') + ' ' + Number(probe.intervalDays ?? 0) + t('probeDays')),
+            h('div', { key: 'c', className: probe.running === true ? 'mo-warn' : 'mo-note' }, probe.running === true
+              ? t('probeRunning')
+              : (Number(probe.lastRunAt ?? 0) > 0
+                ? t('probeLast') + ' ' + fmtClock(probe.lastRunAt) + ' · ' + probeCounts.ok + '/' + probeCounts.total + ' ' + t('probePass')
+                : t('probeNever'))),
+            h('div', { key: 'd', className: 'mo-row' }, [
+              h('button', {
+                key: 'open',
+                type: 'button',
+                className: 'mo-btn',
+                onClick: () => setTab('probe'),
+              }, t('tabProbe')),
+            ]),
+          ],
+      ])
+
+      const probeTab = h('div', { key: 'probe', className: 'mo-tabbody' }, probe === null
+        ? [h('div', { key: 'na', className: 'mo-note' }, t('probeUnavailable'))]
+        : [
+          h('div', { key: 'hint', className: 'mo-note' }, t('probeHint')),
+          h('div', { key: 'ctl', className: 'mo-row' }, [
+            h('label', { key: 'on', className: 'mo-check' }, [
+              h('input', {
+                key: 'c',
+                type: 'checkbox',
+                checked: probe.enabled !== false,
+                disabled: busy,
+                onChange: (event) => onConfig({ probeEnabled: event.target.checked === true }),
+              }),
+              h('span', { key: 't' }, t('probeOn')),
+            ]),
+            h('span', { key: 'il' }, t('probeInterval')),
+            h('select', {
+              key: 'isel',
+              className: 'mo-select',
+              value: String(probe.intervalDays ?? 3),
+              disabled: busy,
+              onChange: (event) => onConfig({ probeEveryDays: Number(event.target.value) }),
+            }, [1, 3, 7, 14].map(days => h('option', { key: days, value: String(days) }, days + t('probeDays')))),
+            h('button', {
+              key: 'run',
+              type: 'button',
+              className: 'mo-btn',
+              disabled: busy === true || probe.running === true,
+              onClick: () => onProbeRun(),
+            }, probe.running === true ? t('probeRunning') : t('probeRunNow')),
+            h('span', { key: 'sp', className: 'mo-spacer' }),
+            h('span', { key: 'st', className: 'mo-note' }, t('probeTimeout') + ' ' + Math.round(Number(probe.timeoutMs ?? 0) / 1000) + 's'
+              + ' · ' + t('probeConcurrency') + ' ' + Number(probe.concurrency ?? 1)
+              + ' · ' + t('probeRounds') + ' ' + Number(probe.rounds ?? 0)),
+          ]),
+          h('div', { key: 'borrow', className: 'mo-row' }, [
+            h('label', { key: 'l', className: 'mo-check' }, [
+              h('input', {
+                key: 'c',
+                type: 'checkbox',
+                checked: config.probeBorrowed === true,
+                disabled: busy,
+                onChange: (event) => onConfig({ probeBorrowed: event.target.checked === true }),
+              }),
+              h('span', { key: 't' }, t('probeBorrowed')),
+            ]),
+            h('span', { key: 'h', className: 'mo-note' }, t('probeBorrowedHint')),
+          ]),
+          h('div', { key: 'when', className: 'mo-note' },
+            t('probeLast') + ' ' + fmtClock(probe.lastRunAt)
+            + ' · ' + t('probeDuration') + ' ' + (fmtCooldown(probe.lastDurationMs) || '—')
+            + ' · ' + (Number(probe.nextAt ?? 0) > 0
+              ? t('probeNext') + ' ' + (fmtCooldown(probe.nextAt - Date.now()) || '—') + t('probeLater')
+              : t('probeIdle'))),
+          h('div', { key: 'tally', className: 'mo-row' }, [
+            h('span', { key: 'ok', className: 'mo-ok' }, t('probePass') + ' ' + probeCounts.ok),
+            h('span', { key: 'bad', className: probeCounts.failed > 0 ? 'mo-err' : 'mo-muted' }, t('probeFail') + ' ' + probeCounts.failed),
+            h('span', { key: 'skip', className: 'mo-muted' }, t('probeSkip') + ' ' + probeCounts.skipped),
+            h('span', { key: 'cost', className: 'mo-muted' }, t('probeCost')),
+          ]),
+          probeReasons.length === 0 ? null : h('div', { key: 'reasons', className: 'mo-note' },
+            t('probeReasons') + '：' + probeReasons.map(([reason, count]) => count + '× ' + reason).join(' · ')),
+          h('div', { key: 'rh', className: 'mo-note' }, t('probeResults') + ' · ' + probeCounts.total
+            + (probe.truncated === true ? '（' + t('probeTruncated') + ' ' + probeResults.length + '）' : '')),
+          probeResults.length === 0
+            ? h('div', { key: 'none', className: 'mo-note' }, t('probeNever'))
+            : h('div', { key: 's', className: 'mo-scroll' }, h('table', { className: 'mo-table' }, [
+              h('thead', { key: 'thead' }, h('tr', { key: 'r' }, [
+                h('th', { key: 'l' }, t('lane')),
+                h('th', { key: 'v' }, t('probeVerdict')),
+                h('th', { key: 'd' }, t('probeMs')),
+                h('th', { key: 'e' }, t('probeReason')),
+              ])),
+              h('tbody', { key: 'tbody' }, probeResults.map((row, index) => h('tr', {
+                key: String(row?.provider) + '/' + String(row?.model) + '/' + index,
+              }, [
+                h('td', { key: 'l', className: 'mo-ellipsis' }, String(row?.provider ?? '') + '/' + String(row?.model ?? '')),
+                h('td', { key: 'v', className: row?.ok === true ? 'mo-ok' : (row?.ok === false ? 'mo-err' : 'mo-muted') },
+                  row?.ok === true ? t('probePass') : (row?.ok === false ? t('probeFail') : t('probeSkip'))),
+                h('td', { key: 'd' }, row?.ok === true || row?.ok === false ? String(Math.round(Number(row?.ms) || 0)) : '—'),
+                h('td', { key: 'e', className: 'mo-ellipsis' }, String(row?.error ?? '')),
+              ]))),
+            ])),
+        ])
+
       const overview = h('div', { key: 'overview', className: 'mo-tabbody' }, [
-        h('div', { key: 'cards', className: 'mo-grid' }, [currentCard, preferenceCard, catalogCard]),
+        h('div', { key: 'cards', className: 'mo-grid' }, [currentCard, preferenceCard, catalogCard, probeCard]),
         h(PreferenceBanner, { key: 'banner', t, preference, onConfig, busy }),
         h('div', { key: 'top', className: 'mo-section' }, [
           h('div', { key: 'h', className: 'mo-note' }, t('topModels') + ' · ' + t('preferHint')),
@@ -947,13 +1142,15 @@ window.__ModuleLoader__.load({
           tabButton('overview', t('tabOverview')),
           tabButton('models', t('tabModels')),
           tabButton('lanes', t('tabLanes')),
+          tabButton('probe', t('tabProbe')),
           tabButton('log', t('tabLog')),
           tabButton('settings', t('tabSettings')),
         ]),
         tab === 'overview' ? overview
           : tab === 'models' ? modelsTab
             : tab === 'lanes' ? lanesTab
-              : tab === 'log' ? logTab : settingsTab,
+              : tab === 'probe' ? probeTab
+                : tab === 'log' ? logTab : settingsTab,
         pickerOpen ? h(PreferencePicker, {
           key: 'picker',
           t,
@@ -1052,7 +1249,27 @@ window.__ModuleLoader__.load({
         if (model !== undefined && model !== '') onConfig({ mode: 'prefer', preferModel: model, preferProvider: '' })
       }, [onConfig])
 
-      return { data, error, busy, load, onConfig, onRefresh, onPreferChange }
+      // 巡检的「跑一轮」走自己的路由，不走 /config：它是一次会真花额度的动作，
+      // 和改配置不是一类事（Host 侧也是分开的两条路由）。跑完立刻重读 summary，
+      // 否则面板要等下一个 10 秒轮询才显示结果。
+      const onProbeRun = React.useCallback(async () => {
+        setBusy(true)
+        try {
+          const response = await fetch(API + '/probe', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'run-now' }),
+          })
+          if (!response.ok) setError('HTTP ' + response.status)
+          await load()
+        } catch (failure) {
+          setError(failure instanceof Error ? failure.message : String(failure))
+        } finally {
+          setBusy(false)
+        }
+      }, [load])
+
+      return { data, error, busy, load, onConfig, onRefresh, onPreferChange, onProbeRun }
     }
 
     /**
@@ -1532,7 +1749,7 @@ window.__ModuleLoader__.load({
       const t = props.t
       const [expanded, setExpanded] = React.useState(false)
       React.useEffect(() => installListRow(t), [t])
-      const { data, error, busy, onConfig, onRefresh, onPreferChange } = useOrchestrator(props.sessionId)
+      const { data, error, busy, onConfig, onRefresh, onPreferChange, onProbeRun } = useOrchestrator(props.sessionId)
       const config = data?.config ?? { mode: 'auto' }
       const current = data?.current ?? null
       const preference = data?.preference ?? { configured: { model: '' }, active: false, suspended: false, group: null }
@@ -1567,6 +1784,7 @@ window.__ModuleLoader__.load({
           onConfig,
           onRefresh,
           onPreferChange,
+          onProbeRun,
         }) : null,
       ])
     }
@@ -1585,7 +1803,7 @@ window.__ModuleLoader__.load({
       const t = props.t
       const [open, setOpen] = React.useState(false)
       React.useEffect(() => installListRow(t), [t])
-      const { data, error, busy, onConfig, onRefresh, onPreferChange } = useOrchestrator(props.sessionId)
+      const { data, error, busy, onConfig, onRefresh, onPreferChange, onProbeRun } = useOrchestrator(props.sessionId)
       const config = data?.config ?? { mode: 'auto' }
       const current = data?.current ?? null
       const next = data?.next ?? null
@@ -1629,6 +1847,7 @@ window.__ModuleLoader__.load({
           onConfig,
           onRefresh,
           onPreferChange,
+          onProbeRun,
           onClose: () => setOpen(false),
         })) : null,
       ])

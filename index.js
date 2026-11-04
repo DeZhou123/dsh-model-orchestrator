@@ -258,6 +258,18 @@ export function apply(ctx, rawConfig = {}) {
     return peer
   }
 
+  /**
+   * 借入 provider 现在能不能被路由。
+   *
+   * 借用未启用 / 没有适配器时返回 true —— 那是「不用借」，不是「借不到」，路由层的
+   * enabled/role 判定已经管了这件事，这里只回答适配器自己的健康问题。
+   */
+  function borrowUsable() {
+    const borrower = peerState.borrower
+    if (borrower === null) return true
+    return borrower.usable !== false
+  }
+
   /** 出借清单：本机实时目录里可借的行。 */
   function peerLendable() {
     const peer = peerConfig()
@@ -964,14 +976,21 @@ export function apply(ctx, rawConfig = {}) {
     const config = runtime.config
     const mode = effectiveMode(state)
     const anchor = anchorFor(state, config)
+    // 借入车道能不能用，只有适配器知道（端点通不通、清单拉没拉到）。把它作为
+    // peerShare.borrowUsable 传给路由器：false 时整片借入车道退出候选（LOCAL PATCH
+    // 2026-11-04，对应 00:09 的 ECONNREFUSED 三连）。
+    const peer = config.peerShare
+    const peerShare = peer === null || peer === undefined
+      ? peer
+      : { ...peer, borrowUsable: borrowUsable() }
     return {
       rows: catalog.current.rows,
+      config: peerShare === null || peerShare === undefined ? config : { ...config, peerShare },
       health,
       // Live open-call counts, so concurrent sessions spread instead of
       // stacking on the single best-looking lane (LOCAL PATCH 2026-10-26).
       inflight,
       dataset,
-      config,
       anchor,
       needs: needsFor(state, config),
       mode,
@@ -1666,6 +1685,41 @@ export function apply(ctx, rawConfig = {}) {
     }
   }
 
+  /**
+   * 巡检状态（面板与 summary 共用）。
+   *
+   * `lastResults` 是上一轮每条车道的判决，一台机器上可能几十行、每行带一条上游错误
+   * 原文。面板每 10 秒轮询一次 summary，把整轮结果原样塞进去等于让轮询悄悄变贵，所以
+   * 这里给条数上限：超出部分只报 `truncated`，要看完整明细走工具 `action=probe`。
+   */
+  const PROBE_RESULT_CAP = 60
+  function probeView() {
+    const status = probe.status()
+    const results = Array.isArray(status.lastResults) ? status.lastResults : []
+    return {
+      enabled: status.enabled,
+      intervalMs: status.intervalMs,
+      intervalDays: status.intervalDays,
+      timeoutMs: status.timeoutMs,
+      concurrency: status.concurrency,
+      running: status.running,
+      rounds: status.rounds,
+      lastRunAt: status.lastRunAt,
+      lastFinishedAt: status.lastFinishedAt,
+      lastDurationMs: status.lastDurationMs,
+      nextAt: status.nextAt,
+      counts: {
+        total: results.length,
+        ok: results.filter(row => row.ok === true).length,
+        failed: results.filter(row => row.ok === false).length,
+        skipped: results.filter(row => row.ok === null || row.ok === undefined).length,
+      },
+      results: results.slice(0, PROBE_RESULT_CAP),
+      truncated: results.length > PROBE_RESULT_CAP,
+      cap: PROBE_RESULT_CAP,
+    }
+  }
+
   const api = {
     refresh: async () => {
       const current = await refreshCatalog('api')
@@ -1845,6 +1899,9 @@ export function apply(ctx, rawConfig = {}) {
           packDir: channelData.packDir,
           freeDir: channelData.freeDir,
         },
+        // 定时渠道巡检：面板「巡检」页签读的就是这一块。它跟着 10 秒轮询走，
+        // 所以条目有上限（见 probeView）。
+        probe: probeView(),
       }
     },
 

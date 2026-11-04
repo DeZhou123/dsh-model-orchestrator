@@ -249,6 +249,22 @@ function render(component, props, seeds) {
   return walk(React.createElement(component, props))
 }
 
+/** Walk a rendered tree and collect every element the predicate accepts. */
+function findAll(tree, predicate) {
+  const found = []
+  const visit = (node) => {
+    if (node === null || node === undefined || typeof node !== 'object') return
+    if (Array.isArray(node)) {
+      for (const child of node) visit(child)
+      return
+    }
+    if (node.type !== undefined && typeof node.type !== 'function' && node.props !== undefined && predicate(node)) found.push(node)
+    visit(node.props?.children)
+  }
+  visit(tree)
+  return found
+}
+
 const t = (key) => '[' + key + ']'
 const groups = [
   { key: 'glm-5-3', family: 'glm-5.3', lanes: 2, total: 2, bestProvider: 'buddy', bestModel: 'glm-5.3', intel: 45, utility: 0.71, tags: ['balanced'] },
@@ -320,7 +336,7 @@ checkThat('expanding it opens the tabbed panel', stripPreview.includes('mo-tabs'
 checkThat('the overview previews the next route', stripPreview.includes('nextUp'), stripPreview.slice(0, 120))
 
 console.log('\n[3] every panel tab renders')
-for (const tab of ['overview', 'models', 'lanes', 'log', 'settings']) {
+for (const tab of ['overview', 'models', 'lanes', 'probe', 'log', 'settings']) {
   let tree = null
   try {
     tree = JSON.stringify(render(strip, { t, sessionId: 's1' }, [true, busyData, '', false, tab]))
@@ -424,6 +440,79 @@ checkThat('the picker lists a family with its facts', withPicker.includes('glm-5
 checkThat('the picker offers a way back to auto', withPicker.includes('[pickerNone]'))
 const withSearch = JSON.stringify(render(strip, { t, sessionId: 's1' }, [true, busyData, '', false, 'settings', true, families, 'kimi']))
 checkThat('the search field is a controlled input', withSearch.includes('mo-search'))
+
+console.log('\n[9] the probe tab')
+// The host hands the panel a bounded copy of the last round. The panel has to both
+// render it and stay usable when an older host sends no probe block at all — a
+// thrown component blanks the whole composer slot, so "absent" must be a branch,
+// not an assumption.
+const probeData = {
+  ...busyData,
+  probe: {
+    enabled: true,
+    intervalMs: 259_200_000,
+    intervalDays: 3,
+    timeoutMs: 20_000,
+    concurrency: 2,
+    running: false,
+    rounds: 4,
+    lastRunAt: 1_793_788_833_023,
+    lastFinishedAt: 1_793_789_000_401,
+    lastDurationMs: 167_000,
+    nextAt: 0,
+    counts: { total: 3, ok: 1, failed: 2, skipped: 0 },
+    results: [
+      { provider: 'buddy', model: 'glm-5.3', ok: true, ms: 900, error: '' },
+      { provider: 'trae', model: 'glm-5.3', ok: false, ms: 0, error: '冷却中：额度耗尽' },
+      { provider: 'trae', model: 'kimi-k3', ok: false, ms: 0, error: '冷却中：额度耗尽' },
+    ],
+    truncated: false,
+    cap: 60,
+  },
+}
+const probeTree = render(strip, { t, sessionId: 's1' }, [true, probeData, '', false, 'probe'])
+const probeJson = JSON.stringify(probeTree)
+checkThat('the probe tab names its controls', probeJson.includes('[probeRunNow]') && probeJson.includes('[probeInterval]'))
+checkThat('every lane of the round is listed', probeJson.includes('buddy/glm-5.3') && probeJson.includes('trae/kimi-k3'))
+checkThat('verdicts are labelled, not just coloured', probeJson.includes('[probePass]') && probeJson.includes('[probeFail]'))
+checkThat('failures are tallied by reason', probeJson.includes('[probeReasons]') && probeJson.includes('2× 冷却中：额度耗尽'))
+checkThat('the interval offers day steps', probeJson.includes('[probeDays]'))
+checkThat('a complete round never claims to be truncated', !probeJson.includes('[probeTruncated]'))
+
+// An older Host (no `probe` in summary) must still render the tab.
+const noProbeJson = JSON.stringify(render(strip, { t, sessionId: 's1' }, [true, busyData, '', false, 'probe']))
+checkThat('an older Host still renders the tab', noProbeJson.includes('[probeUnavailable]'), noProbeJson.slice(0, 80))
+
+// The overview carries the same state as a card, so "is anything wrong" does not
+// require opening the tab.
+const overviewJson = JSON.stringify(render(strip, { t, sessionId: 's1' }, [true, probeData, '', false, 'overview']))
+checkThat('the overview carries a probe card', overviewJson.includes('[probeTitle]') && overviewJson.includes('1/3'))
+
+// Interactions: the round is an explicit action on its own route, the switches are config.
+requests.length = 0
+const runButtons = findAll(probeTree, node => node.type === 'button' && node.props.children === '[probeRunNow]')
+check('exactly one run button is offered', runButtons.length, 1)
+runButtons[0].props.onClick()
+await Promise.resolve()
+await Promise.resolve()
+checkThat('running a round posts to /probe, not /config',
+  requests.some(entry => entry.url.endsWith('/probe') && entry.method === 'POST' && entry.body?.action === 'run-now'),
+  JSON.stringify(requests))
+
+const probeInputs = findAll(probeTree, node => node.type === 'input' && node.props.onChange !== undefined)
+check('the tab exposes the schedule switch and the borrowed-lane switch', probeInputs.length, 2)
+probeInputs[0].props.onChange({ target: { checked: false } })
+checkThat('turning the schedule off writes probeEnabled',
+  requests.some(entry => entry.url.endsWith('/config') && entry.body?.probeEnabled === false), JSON.stringify(requests.slice(-2)))
+probeInputs[1].props.onChange({ target: { checked: true } })
+checkThat('the borrowed-lane switch writes probeBorrowed',
+  requests.some(entry => entry.url.endsWith('/config') && entry.body?.probeBorrowed === true), JSON.stringify(requests.slice(-2)))
+
+const daySelect = findAll(probeTree, node => node.type === 'select' && node.props.value === '3')
+check('the interval select shows the configured interval', daySelect.length, 1)
+daySelect[0].props.onChange({ target: { value: '7' } })
+checkThat('changing the interval writes probeEveryDays',
+  requests.some(entry => entry.url.endsWith('/config') && entry.body?.probeEveryDays === 7), JSON.stringify(requests.slice(-2)))
 
 console.log('\n' + (failures === 0 ? 'PASS' : 'FAIL') + ' — ' + (checks - failures) + '/' + checks)
 if (failures > 0) process.exitCode = 1

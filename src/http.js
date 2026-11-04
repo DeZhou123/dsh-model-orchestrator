@@ -130,6 +130,32 @@ export function installHttpApi(options) {
       },
     },
     {
+      // 渠道巡检：GET 只读状态，POST {action:'run-now'} 真的探一轮（花额度）。
+      // 分开成一条路由而不是塞进 /config，是因为「读状态」要让面板的 10 秒轮询随便调，
+      // 而「跑一轮」必须是一次显式动作 —— 混在一起的话，一次误发的 config 写入就会
+      // 替用户烧掉一整轮额度。
+      path: `${PREFIX}/probe`,
+      async handler(req, res) {
+        if (req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'POST') {
+          res.writeHead(405, { Allow: 'GET, HEAD, POST' })
+          res.end()
+          return
+        }
+        try {
+          const body = req.method === 'POST' ? await readJsonBody(req) : {}
+          const value = await api.probe({ action: String(body?.action ?? 'status') })
+          if (req.method === 'HEAD') {
+            res.writeHead(200, { 'Cache-Control': 'no-store' })
+            res.end()
+            return
+          }
+          sendJson(res, 200, value)
+        } catch (error) {
+          sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) })
+        }
+      },
+    },
+    {
       path: `${PREFIX}/refresh`,
       async handler(req, res) {
         if (req.method !== 'POST') {

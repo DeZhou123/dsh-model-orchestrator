@@ -213,7 +213,7 @@ function createSession(id, origin) {
 console.log('\n[1] plugin boot')
 apply(ctx, {})
 await new Promise(resolve => setTimeout(resolve, 20))
-checkThat('the panel routes were installed', routes.size === 4, [...routes.keys()].join(','))
+checkThat('the panel routes were installed', routes.size === 5, [...routes.keys()].join(','))
 checkThat('the tool was registered', tools.has('model_orchestrator'))
 checkThat('the command was registered', commands.has('route'))
 const status0 = await tools.get('model_orchestrator').execute({ action: 'status' })
@@ -454,6 +454,13 @@ console.log('\n[8] 新会话面板能预告下一条消息用哪个模型')
   checkThat('the preview names a dispatchable lane',
     typeof captured.body.next.provider === 'string' && captured.body.next.provider !== '')
   check('the preview follows the live strategy', captured.body.next.mode, 'auto')
+  checkThat('the summary carries the probe view',
+    captured.body.probe !== null && typeof captured.body.probe === 'object'
+      && typeof captured.body.probe.enabled === 'boolean'
+      && Array.isArray(captured.body.probe.results)
+      && typeof captured.body.probe.results.length === 'number'
+      && typeof captured.body.probe.cap === 'number',
+    JSON.stringify(captured.body.probe ?? null).slice(0, 120))
 }
 
 console.log('\n[9] 自动选择：接管模型，选具体模型时让位')
@@ -536,6 +543,43 @@ console.log('\n[10] 全部模型清单接口（偏好选择器用）')
     filtered.body.count < all.body.count && filtered.body.groups.every(group => (String(group.family) + ' ' + String(group.key)).toLowerCase().includes('mimo')),
     String(filtered.body.count))
   check('the configured preference is reported', typeof all.body.configured, 'string')
+}
+
+console.log('\n[8b] 巡检路由：读状态免费，跑一轮是显式动作')
+{
+  const probeRoute = routes.get('/api/model-orchestrator/probe')
+  checkThat('the probe route was installed', probeRoute !== undefined)
+  const call = async (method, body) => {
+    const captured = { code: 0, body: null }
+    const res = {
+      writeHead(code, headers) { captured.code = code; captured.headers = headers },
+      end(out) { captured.body = out === undefined || out === null ? null : JSON.parse(String(out)) },
+    }
+    await probeRoute.handler({ method, url: '/api/model-orchestrator/probe' }, res)
+    return captured
+  }
+
+  // GET 只读：不开计时器、不发上游请求、永远免费 —— 面板 10 秒轮询可以随便调。
+  const got = await call('GET')
+  check('a GET probe read is free and answers 200', got.code, 200)
+  checkThat('the read reports enabled state',
+    typeof got.body.status?.enabled === 'boolean' && typeof got.body.status?.intervalMs === 'number',
+    JSON.stringify(got.body).slice(0, 120))
+
+  // POST {action:'run-now'} 是唯一花钱的入口；跑完回带 summary 与 status。
+  const probeSummary = await tools.get('model_orchestrator').execute({ action: 'probe', probeMode: 'run-now' })
+  checkThat('the tool run-now returns a summary',
+    probeSummary.ok === true && probeSummary.summary !== null
+      && typeof probeSummary.summary.total === 'number' && Array.isArray(probeSummary.summary.results),
+    JSON.stringify(probeSummary.summary ?? null).slice(0, 160))
+  checkThat('every probe result names its lane and verdict',
+    probeSummary.summary.results.every(row => typeof row.provider === 'string' && typeof row.ok === 'boolean' || row.ok === null),
+    String(probeSummary.summary.results.length))
+
+  // HEAD 走和 GET 同样的只读面，不读 body。
+  const headed = await call('HEAD')
+  check('a HEAD read answers 200', headed.code, 200)
+  checkThat('a HEAD read sends no body', headed.body === null)
 }
 
 console.log('\n' + (failures === 0 ? 'PASS' : 'FAIL') + ' — ' + (checks - failures) + '/' + checks)
