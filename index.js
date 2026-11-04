@@ -55,7 +55,7 @@ export const name = 'model-orchestrator'
 /** `llm` is what the plugin exists for. The rest degrades feature by feature. */
 export const inject = ['llm']
 
-export const version = '2.6.2'
+export const version = '2.6.3'
 
 /**
  * 这条 provider 是不是「借来的聚合车道」。
@@ -1157,20 +1157,31 @@ export function apply(ctx, rawConfig = {}) {
       }
       return
     }
-    if (state.preferenceExhausted !== null) {
-      state.preferenceExhausted = null
-      state.preferenceSuspended = false
-      health.logDecision({
-        kind: 'preference-resumed',
-        to: runtime.config.preferModel,
-        from: null,
-        reason: '偏好模型已有可用渠道',
-        sessionId: state.agent.id,
-      }, runtime.config.decisionLogSize)
-      if (runtime.config.preferNotify !== false) {
-        notify('偏好模式已恢复', '偏好模型 ' + runtime.config.preferModel + ' 重新有可用渠道。')
-      }
+    if (state.preferenceExhausted !== null || state.preferenceSuspended === true) {
+      resumePreference(state, '偏好模型已有可用渠道')
     }
+  }
+
+  /**
+   * 解除偏好暂停：账本记一笔、面板通知一次。
+   *
+   * 抽成函数是为了让「会话下一次路由」之外的第二条路径也能解除它（见 recheckPreference）。
+   */
+  function resumePreference(state, reason) {
+    if (state.preferenceSuspended !== true && state.preferenceExhausted === null) return false
+    state.preferenceExhausted = null
+    state.preferenceSuspended = false
+    health.logDecision({
+      kind: 'preference-resumed',
+      to: runtime.config.preferModel,
+      from: null,
+      reason,
+      sessionId: state.agent.id,
+    }, runtime.config.decisionLogSize)
+    if (runtime.config.preferNotify !== false) {
+      notify('偏好模式已恢复', '偏好模型 ' + runtime.config.preferModel + ' 重新有可用渠道。')
+    }
+    return true
   }
 
   function fallbackName(mode) {
