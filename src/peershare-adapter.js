@@ -92,6 +92,19 @@ function hasImage(messages) {
   return false
 }
 
+/**
+ * 这个错误说明「端点不可达」，而不是「对侧拒绝了这个请求」。
+ *
+ * 判据与 src/health.js 的 NETWORK_CONNECT_TEXT 同一套：拒绝连接、域名解析失败、
+ * 连接被重置、socket 挂断——它们的共同点是**请求根本没到达对侧**。
+ */
+const CONNECT_ERROR_TEXT =
+  /ECONNREFUSED|ENOTFOUND|EAI_AGAIN|getaddrinfo|ECONNRESET|ECONNABORTED|EHOSTUNREACH|ENETUNREACH|socket hang up|connect(?:ion)? (?:refused|reset)/i
+
+function isConnectError(message) {
+  return CONNECT_ERROR_TEXT.test(String(message ?? ''))
+}
+
 export function createPeerAdapter(options) {
   const provider = String(options.provider ?? 'peer')
   const config = typeof options.config === 'function' ? options.config : () => ({})
@@ -100,6 +113,19 @@ export function createPeerAdapter(options) {
   let models = []
   let modelsAt = 0
   let modelsError = ''
+  /**
+   * 端点连不上（LOCAL PATCH 2026-11-04）。
+   *
+   * 2026-11-04 00:09 的事故：对侧端点被热重载拆掉，B 的 refreshModels 连续失败，但
+   * 旧代码**只记 modelsError、留着旧清单**——于是路由继续把整轮请求派给一个已经不
+   * 存在的端口，三次换道全撞在同一堵墙上，agent turn failed。
+   *
+   * 现在：连接层失败（拒绝连接/域名解析失败/连接被重置）就把清单判为**不可信**。
+   * 清单本身不删（面板要显示上次看到过什么），但 usable 为 false，路由层据此跳过
+   * 整个借入 provider。
+   */
+  let unreachable = false
+  let unreachableAt = 0
 
   const baseUrl = () => normalizePeerUrl(config().peerUrl)
   const token = () => String(config().peerToken ?? '').trim()
@@ -122,8 +148,15 @@ export function createPeerAdapter(options) {
         .map(row => ({ ...row, id: String(row.id ?? (row.provider + '/' + row.model)) }))
       modelsAt = Date.now()
       modelsError = ''
+      // 一次成功的清单拉取就是「端点还活着」的权威证据。
+      unreachable = false
+      unreachableAt = 0
     } catch (error) {
       modelsError = error instanceof Error ? error.message : String(error)
+      if (isConnectError(modelsError)) {
+        unreachable = true
+        unreachableAt = Date.now()
+      }
       log('拉取对侧出借清单失败：' + modelsError)
     }
     return models
@@ -135,8 +168,22 @@ export function createPeerAdapter(options) {
     providerInfo(id) {
       return { id, name: String(config().label ?? '') || '对侧渠道（互借）' }
     },
+    /**
+     * 借入车道的重试策略（LOCAL PATCH 2026-11-04）。
+     *
+     * 返回 undefined 就是吃内核默认：5 次原地退避（约 15 秒），TRANSPORT 也算可重试。
+     * 但借入车道的几百个模型共用**同一个端点**，端点不可达时原地重试只是同一堵墙撞 5 次；
+     * 而本插件自己的换道逻辑（agent/request-error）本来就能在同一个 step 里换掉它。
+     * 所以：传输层失败不重试——交给换道；只有对侧真的答了话的失败（限流/服务端/超时）才
+     * 值得原地等一次。
+     */
     providerRetryPolicy() {
-      return undefined
+      return {
+        mode: 'normal',
+        maxRetries: 1,
+        retryableCodes: ['RATE_LIMIT', 'SERVER', 'TIMEOUT', 'EMPTY_RESPONSE'],
+        backoff: { initialDelayMs: 300, maxDelayMs: 2_000, jitterRatio: 0.1 },
+      }
     },
     imageRequestPricing() {
       return undefined
@@ -281,6 +328,24 @@ export function createPeerAdapter(options) {
     },
     get modelsError() {
       return modelsError
+    },
+    /** 端点是否被判定为不可达（连接层失败后 true，清单拉取成功后复位）。 */
+    get unreachable() {
+      return unreachable
+    },
+    get unreachableAt() {
+      return unreachableAt
+    },
+    /**
+     * 这条借入 provider 现在能不能被路由使用。
+     *
+     * 三个否的条件，每一个都对应一次实测事故：没有清单（没东西可路由）、端点不可达
+     * （路由过去就是 ECONNREFUSED）、清单从没成功拉过。
+     */
+    get usable() {
+      if (unreachable) return false
+      if (modelsAt === 0 && modelsError !== '') return false
+      return models.length > 0
     },
   }
 }

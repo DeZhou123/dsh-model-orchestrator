@@ -439,12 +439,23 @@ export function evaluate(input) {
   // 只要本机还有任何一条合格车道，借用车道这一轮就不进入打分。
   // `borrowed` 由目录层打在行上（provider === config.peerShare.peerProvider）。
   const peer = config?.peerShare
-  if (peer !== null && peer !== undefined && peer.enabled === true && peer.borrowWhen !== 'always') {
-    const localAlive = all.some(entry => entry.inspection.eligible && entry.row.borrowed !== true)
-    if (localAlive) {
+  if (peer !== null && peer !== undefined && peer.enabled === true) {
+    if (peer.borrowUsable === false) {
+      // 端点不可达 / 清单没拉到（LOCAL PATCH 2026-11-04）：借入车道这一轮一律不参战，
+      // 无论 borrowWhen 是 exhausted 还是 always。判据来自借用方适配器自己
+      // （src/peershare-adapter.js 的 usable），它是唯一知道端点通不通的地方。
+      // 2026-11-04 00:09 的事故就是缺了这一条：对侧端口已经没了，本机还按旧清单
+      // 把整轮请求派过去，三次换道全撞同一个 ECONNREFUSED，agent turn failed。
       all = all.map(entry => (entry.row.borrowed === true
-        ? { row: entry.row, inspection: { eligible: false, borrowedIdle: true, reason: '互借：本机仍有可用车道，借来的额度留作兜底' } }
+        ? { row: entry.row, inspection: { eligible: false, borrowedIdle: true, reason: '互借：对侧端点不可达或清单失效，借入车道本轮不参战' } }
         : entry))
+    } else if (peer.borrowWhen !== 'always') {
+      const localAlive = all.some(entry => entry.inspection.eligible && entry.row.borrowed !== true)
+      if (localAlive) {
+        all = all.map(entry => (entry.row.borrowed === true
+          ? { row: entry.row, inspection: { eligible: false, borrowedIdle: true, reason: '互借：本机仍有可用车道，借来的额度留作兜底' } }
+          : entry))
+      }
     }
   }
   let visionFallback = false

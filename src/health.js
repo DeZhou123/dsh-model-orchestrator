@@ -169,6 +169,33 @@ const DAILY_QUOTA_TEXT =
  * verdict for a real region block is a full day on the whole lane.
  */
 const REGION_TEXT = /not available in your (?:region|country)|region not supported|地区封锁|地区限制|区域限制/i
+/**
+ * 线路问题（LOCAL PATCH 2026-11-04，A 侧实测断网事故）。
+ *
+ * 事故：WiFi 断了 3 分钟，探活把「Loomy 凭据探测网络失败：fetch failed」原样交给
+ * 分类器，AUTH_TEXT 里的「凭据」命中（那是这条**链路的名字**，不是判决），于是
+ * 整条 loomy lane 被判 auth、停 30 分钟——网络恢复后仍锁在原地。同一段断网在 B 侧
+ * 是真实的 transport 文案，只吃 30 秒模型级冷却。
+ *
+ * 判据必须反过来问：「消息里有没有网络故障的证据」，而不是「有没有出现过凭据这个词」。
+ * 真凭据失效（invalid api key / 401）不带任何网络词，故不受影响。
+ */
+const NETWORK_TEXT =
+  /fetch failed|failed to fetch|network error|网络失败|网络错误|连不上上游|getaddrinfo|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ECONNABORTED|EPIPE|EPROTO|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|socket hang up|certificate|TLS|握手失败|连接被重置/i
+/**
+ * 其中更硬的一类：**端点本身不可达**（拒绝连接 / 域名解析失败 / 连接被重置）。
+ *
+ * 这一类失败证明的不是「某个模型坏了」，而是「这条路现在根本连不上」。对普通渠道
+ * 它与线路抖动同义；对互借的聚合车道它意味着对侧整个端点没了——那时把判决降到模型级
+ * 毫无意义（同一端点的几百条借入车道会在同一秒各自撞墙）。
+ */
+const NETWORK_CONNECT_TEXT =
+  /ECONNREFUSED|ENOTFOUND|EAI_AGAIN|getaddrinfo|ECONNRESET|ECONNABORTED|EHOSTUNREACH|ENETUNREACH|socket hang up|connect(?:ion)? (?:refused|reset)|connect ECONNREFUSED/i
+/** 同样的判据，按 code 认：Node 的网络错误自带这些码，不必读文案。 */
+const NETWORK_CONNECT_CODES = new Set([
+  'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'ECONNRESET', 'ECONNABORTED',
+  'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'EPROTO', 'UND_ERR_SOCKET',
+])
 const AUTH_TEXT = /unauthor|invalid api key|invalid credential|sign in|登录|凭据/i
 const CONTEXT_TEXT = /context (window|length)|too many tokens|maximum context|上下文/i
 /**
@@ -299,6 +326,27 @@ export function classifyFailure(failure, context = {}) {
 
   if (code === 'REGION_BLOCKED' || byText(REGION_TEXT)) {
     return { kind: KIND.REGION, cooldownMs: COOLDOWN.region, scope: 'lane', reason: '地区封锁', retryable: false }
+  }
+
+  // ── 线路问题先于凭据问题（LOCAL PATCH 2026-11-04）──────────────────────────
+  // 顺序就是判决：同一个字符串「凭据探测网络失败：fetch failed」既是「凭据」也是
+  // 「网络」。凭据失效是账号层面的长期状态（值得停 30 分钟、值得整条车道停），
+  // 网络抖动不是（30 秒、模型级，下一轮自己会好）。把更短、更可自愈的那个判在前面，
+  // 误判的代价就从「锁死半小时」降到「浪费半分钟」。
+  //
+  // 权威码仍然优先：适配器自己报 TRANSPORT/TIMEOUT 时由下面的分支处理，
+  // 这里只接管「没有结构化判决、只能读文案」的失败（探活就属于这一类）。
+  const connectCode = NETWORK_CONNECT_CODES.has(code)
+  if (connectCode || (!authoritative && NETWORK_TEXT.test(detail))) {
+    const connectivity = connectCode || NETWORK_CONNECT_TEXT.test(detail)
+    return {
+      kind: KIND.TRANSIENT,
+      cooldownMs: Math.min(COOLDOWN.transient * 1.5 ** strikes, COOLDOWN.rateMax),
+      scope: 'model',
+      connectivity,
+      reason: '线路问题（非凭据）：' + (message === '' ? code : message.slice(0, 200)),
+      retryable: true,
+    }
   }
 
   if (AUTH_CODES.has(code) || status === 401 || status === 403 || byText(AUTH_TEXT)) {
@@ -555,8 +603,17 @@ export function createHealth(options = {}) {
     const now = clock()
     const lane = lanes.get(laneKey(provider))
     const laneStrikes = lane === undefined ? 0 : decayStrikes(lane, now)
-    if (lane !== undefined && lane.until > now && LANE_WIDE.has(lane.status)) {
-      return { status: lane.status, available: false, until: lane.until, reason: lane.reason, scope: 'lane', strikes: laneStrikes }
+    if (lane !== undefined && lane.until > now
+      && (LANE_WIDE.has(lane.status) || lane.endpointDown === true)) {
+      return {
+        status: lane.status,
+        available: false,
+        until: lane.until,
+        reason: lane.reason,
+        scope: 'lane',
+        endpointDown: lane.endpointDown === true,
+        strikes: laneStrikes,
+      }
     }
     const record = models.get(modelKey(provider, model))
     if (record === undefined) {
@@ -583,11 +640,51 @@ export function createHealth(options = {}) {
    * @param {object} verdict - output of classifyFailure
    * @returns {object} the verdict the ledger will actually apply
    */
+  /**
+   * 探活的判决必须比真实调用更轻（LOCAL PATCH 2026-11-04）。
+   *
+   * 探活是插件自己发的 8 token 心跳，不是用户的一次请求。它的失败最多说明「这一刻这条
+   * 路不通」，而它出现的时机是**定时器排的**，不是用户需要它的时候——A 侧事故正是如此：
+   * 断网那 3 分钟里定时探活恰好砸在 loomy 上，把一条正在出字的车道停到 01:08。
+   *
+   * 所以：探活失败一律模型级、且冷却不超过 transient 的两倍。真正的凭据失效/额度耗尽
+   * 会在用户的下一次真实请求上再次出现，那时再按重判决处理，代价只是晚一步。
+   */
+  function capProbeVerdict(failure, verdict) {
+    if (String(failure?.purpose ?? '') !== 'probe') return verdict
+    const cap = COOLDOWN.transient * 2
+    const kind = verdict.kind
+    // 上下文与自身请求错误与车道健康无关，保持原样。
+    if (kind === KIND.CONTEXT || kind === KIND.REQUEST) return verdict
+    return {
+      ...verdict,
+      scope: 'model',
+      cooldownMs: Math.min(verdict.cooldownMs > 0 ? verdict.cooldownMs : cap, cap),
+      probeCapped: true,
+      reason: '〔探活〕' + verdict.reason,
+    }
+  }
+
   function demoteOnAggregator(provider, verdict) {
     if (verdict === null || verdict === undefined) return verdict
-    if (verdict.scope !== 'lane') return verdict
     if (verdict.kind === KIND.CONTEXT) return verdict
     if (isAggregator(provider) !== true) return verdict
+    // ── 方向一：端点本身不可达 ⇒ 升回车道级（整片下线）────────────────────
+    // 降级的理由是「一个模型的失败证明不了对侧几百个模型都死了」。但连接层失败根本不
+    // 是在说某个模型：ECONNREFUSED 说的是**这个端口上没有监听**。互借的几百条借入车道
+    // 共用同一个 base URL（src/peershare-adapter.js 一个 provider 一个端点），所以
+    // 端点不可达恰恰是「整片都不可用」的严格证明——此时留在模型级，等于让路由在同
+    // 一个死端口上把 3 次换道预算烧光、整轮失败（2026-11-04 00:09 实测三连）。
+    if (verdict.connectivity === true) {
+      return {
+        ...verdict,
+        scope: 'lane',
+        endpointDown: true,
+        reason: '〔互借端点不可达〕' + verdict.reason,
+      }
+    }
+    // ── 方向二：其它车道级判决照旧降为模型级 ───────────────────────────────
+    if (verdict.scope !== 'lane') return verdict
     return {
       ...verdict,
       scope: 'model',
@@ -601,7 +698,8 @@ export function createHealth(options = {}) {
     const now = clock()
     const lane = laneRecord(provider)
     const record = modelRecord(provider, model)
-    const verdict = demoteOnAggregator(provider, classifyFailure(failure, { strikes: record.strikes, now }))
+    const verdict = capProbeVerdict(failure,
+      demoteOnAggregator(provider, classifyFailure(failure, { strikes: record.strikes, now })))
 
     // A malformed request, and a prompt that does not fit this model's window,
     // say nothing about the lane's health. Neither may enter the ledger:
@@ -699,6 +797,7 @@ export function createHealth(options = {}) {
       lane.status = verdict.kind
       lane.reason = verdict.reason
       lane.until = Math.max(lane.until, record.until)
+      if (verdict.endpointDown === true) lane.endpointDown = true
       if (!burst) lane.strikes += 1
       lane.lastAt = now
       // A lane-wide verdict applies to every model the lane advertises.
@@ -771,6 +870,16 @@ export function createHealth(options = {}) {
 
     lane.counters.calls += 1
     lane.lastAt = now
+    // 一次成功的调用就是「端点还活着」的证明：聚合车道的 endpointDown 必须就地清掉，
+    // 否则对侧恢复之后本机仍在整片跳过借入车道（LOCAL PATCH 2026-11-04）。
+    if (lane.endpointDown === true) {
+      lane.endpointDown = false
+      if (LANE_WIDE.has(lane.status)) {
+        lane.status = KIND.OK
+        lane.reason = ''
+        lane.until = 0
+      }
+    }
     // A call that just succeeded is proof this lane is serving again. The old
     // condition (`lane.until <= now`) only cleared an *expired* cooldown, so a
     // lane parked until midnight stayed parked even after a successful call —
@@ -795,6 +904,29 @@ export function createHealth(options = {}) {
 
     dirty = true
     return record
+  }
+
+  /**
+   * 端点恢复的显式信号（LOCAL PATCH 2026-11-04）。
+   *
+   * 借入车道的「端点不可达」不能只靠一次成功的模型调用解除：对侧恢复后，本机的第一条
+   * 请求恰恰会因为**整片被跳过**而永远不会发出——没人调用它，就没人证明它活着。
+   * 所以清单刷新成功时由调用方显式通知一次（见 index.js 的 refreshBorrowedCatalog）。
+   *
+   * @param {string} provider
+   * @returns {boolean} whether anything was lifted
+   */
+  function clearEndpointDown(provider) {
+    const lane = lanes.get(laneKey(provider))
+    if (lane === undefined || lane.endpointDown !== true) return false
+    lane.endpointDown = false
+    if (LANE_WIDE.has(lane.status) && lane.status === KIND.TRANSIENT) {
+      lane.status = KIND.OK
+      lane.reason = ''
+      lane.until = 0
+    }
+    dirty = true
+    return true
   }
 
   /** Append one routing decision for the panel. */
@@ -1030,6 +1162,7 @@ export function createHealth(options = {}) {
     classifyFailure,
     stateOf,
     markFailure,
+    clearEndpointDown,
     markSuccess,
     logDecision,
     observed,
