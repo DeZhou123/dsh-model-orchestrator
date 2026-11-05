@@ -19,7 +19,7 @@ import { createDataset, familyFor, familyResolutionFor, familyInfo, reportLaneTt
 import { createHealth, KIND } from '../src/health.js'
 import { createCatalog, laneMultiplier, laneIsFree } from '../src/catalog.js'
 import { createChannelData, packDayKey } from '../src/channels.js'
-import { chooseEffort, evaluate, latencyFor, rankGroups, rankLanes, readNeeds, resolvePreferenceGroup, selectRoute } from '../src/router.js'
+import { chooseEffort, evaluate, latencyFor, rankGroups, rankLanes, readNeeds, resolvePreferenceGroup, scoreLane, selectRoute } from '../src/router.js'
 import { resolveConfig, sanitizePatch } from '../src/config.js'
 import { createInflight } from '../src/inflight.js'
 import { datasetFromReport } from '../src/report-import.js'
@@ -954,6 +954,69 @@ console.log('\n[15] 聚合车道（互借）不得被一次失败判死')
   // 互借关掉时不再是聚合体：判定回到车道级，避免把真实渠道的故障放过。
   const offAgg = createHealth({ userDir: null, clock, isAggregator: () => false })
   check('没有聚合判据时维持车道级', offAgg.markFailure('peer', 'm', peerLaneQuota).scope, 'lane')
+}
+
+console.log('\n[16] 线路故障 vs 凭据故障（2026-11-04 A 侧断网事故）')
+{
+  // 事故：WiFi 断 3 分钟，探活把「Loomy 凭据探测网络失败：fetch failed」交给分类器，
+  // AUTH_TEXT 里的「凭据」命中——那是这条**链路的显示名**，不是判决——整条 lane 被判
+  // auth 停 30 分钟，网络恢复后仍锁在原地。B 侧同一场断网只吃 30 秒模型级冷却。
+  const incident = { code: 'UNKNOWN', message: 'Loomy 凭据探测网络失败：fetch failed' }
+  const realCall = classify(incident)
+  check('断网文案带「凭据」不再判凭据失效', realCall.kind, KIND.TRANSIENT)
+  check('判成模型级（不是整条车道）', realCall.scope, 'model')
+  checkThat('冷却只有 30 秒量级，不是 30 分钟', realCall.cooldownMs <= 60_000)
+
+  // 真凭据失效必须一个字节都不放过。
+  const realAuth = classify({ code: 'UNKNOWN', status: 401, message: 'invalid api key' })
+  check('真 401 仍是凭据失效', realAuth.kind, KIND.AUTH)
+  check('真凭据失效仍是整条车道', realAuth.scope, 'lane')
+  checkThat('真凭据失效仍是 30 分钟', realAuth.cooldownMs === 30 * 60_000)
+
+  // 探活不是证据：任何判决都不许由它升级成车道级长冷却。
+  const probeQuota = createHealth({ userDir: null, clock })
+  // purpose 写在 failure 对象里，与 src/probe.js 的真实调用形状一致。
+  const probeVerdict = probeQuota.markFailure('loomy', 'm', { code: 'PROBE', message: '账号额度已用尽，请改用其它模型', purpose: 'probe' })
+  check('探活失败一律模型级', probeVerdict.scope, 'model')
+  checkThat('探活失败冷却不超过 transient 的两倍', probeVerdict.cooldownMs <= 60_000)
+  checkThat('探活判决被标出来（面板要能说实话）', String(probeVerdict.reason).startsWith('〔探活〕'))
+
+  // 端点不可达 = 整片下线（互借），额度类判决仍降为模型级：两个方向都要成立。
+  const agg = createHealth({ userDir: null, clock, isAggregator: provider => provider === 'peer' })
+  const down = agg.markFailure('peer', 'loomy/DeepSeek-V4.1-Flash', { code: 'UNKNOWN', message: 'connect ECONNREFUSED 127.0.0.1:18326' })
+  check('互借端点不可达 → 车道级', down.scope, 'lane')
+  checkThat('端点不可达被标记', down.endpointDown === true)
+  check('同端点的兄弟模型一起下线', agg.stateOf('peer', 'cline/x').available, false)
+  checkThat('端点恢复信号能解除它', agg.clearEndpointDown('peer') === true && agg.stateOf('peer', 'cline/x').available === true)
+
+  // 真实渠道的同一类失败必须仍是模型级——不能把一次网络抖动升级成停整条渠道。
+  const real = createHealth({ userDir: null, clock, isAggregator: () => false })
+  check('真实渠道的连接失败仍是模型级', real.markFailure('loomy', 'm', { code: 'UNKNOWN', message: 'connect ECONNREFUSED 1.2.3.4:443' }).scope, 'model')
+}
+
+console.log('\n[17] 换道代价随目标车道价格缩放（额度被最贵车道吃干）')
+{
+  // 实测口径：x0.06 的车道（burn≈0.016）与 x2.0 的车道（burn≈0.9）效用差，
+  // 减去换道的缓存重读代价之后必须仍然为正——否则「用便宜车道替换贵车道」在结构上
+  // 不可能发生，额度只会一直从最贵的那条车道漏掉。
+  const cfg = resolveConfig({}, {})
+  const cheapLane = { provider: 'peer', model: 'm-cheap', quality: 0.6, contextWindow: 200_000, tags: [], burn: 0.0162 }
+  const priceyLane = { provider: 'peer', model: 'm-pricey', quality: 0.6, contextWindow: 200_000, tags: [], burn: 0.9 }
+  const cacheNeeds = { cacheTokens: 30_000 }
+  const cheapScore = scoreLane(cheapLane, cacheNeeds, 'economy', createHealth({ userDir: null, clock }), priceyLane, cfg, NOW, null)
+  const priceyScore = scoreLane(priceyLane, cacheNeeds, 'economy', createHealth({ userDir: null, clock }), priceyLane, cfg, NOW, null)
+  checkThat('economy 下换到便宜车道净收益为正', cheapScore.utility - priceyScore.utility > 0.04)
+
+  // 惩罚本身：便宜车道只付零头，基准价格的车道照旧付满额——削的是「换贵车道」的代价，
+  // 不是把惩罚整体调小（后者只会让路由更爱换道，与省额度无关）。
+  const noCache = { cacheTokens: 0 }
+  const cheapPenalty = scoreLane(cheapLane, noCache, 'economy', createHealth({ userDir: null, clock }), null, cfg, NOW, null).utility
+    - scoreLane(cheapLane, cacheNeeds, 'economy', createHealth({ userDir: null, clock }), null, cfg, NOW, null).utility
+  const priceyNoCache = scoreLane(priceyLane, noCache, 'economy', createHealth({ userDir: null, clock }), null, cfg, NOW, null).utility
+  const priceyPenalty = priceyNoCache
+    - scoreLane(priceyLane, cacheNeeds, 'economy', createHealth({ userDir: null, clock }), null, cfg, NOW, null).utility
+  checkThat('便宜车道的重读惩罚缩到零头（<0.06）', cheapPenalty < 0.06)
+  checkThat('基准价格车道的重读惩罚保持满额（0.35）', Math.abs(priceyPenalty - 0.35) < 0.01)
 }
 
 console.log('\n' + (failures === 0 ? 'PASS' : 'FAIL') + ' — ' + (checks - failures) + '/' + checks)

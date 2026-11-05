@@ -582,5 +582,62 @@ console.log('\n[8b] 巡检路由：读状态免费，跑一轮是显式动作')
   checkThat('a HEAD read sends no body', headed.body === null)
 }
 
+console.log('\n[9] 偏好暂停的自愈：不再等「下一次路由」')
+{
+  // 事故形状（2026-11-04）：断网把偏好家族判成全灭 → preferenceSuspended 置位；而它是
+  // **会话级内存态**，只在「该会话下一次路由」时才会被重新评估。断网时恰好空闲的会话，
+  // 网络恢复后仍一直显示「已暂停 / 自动」——这就是用户看到的「有的会话退出了偏好模式」。
+  const healSession = createSession('s-heal', undefined)
+  const healAgent = { id: 's-heal', session: healSession }
+  const healRef = makeSelection('trae', 'mimo-v2.6-pro')
+  sessions.set('s-heal', { ref: healRef, session: healSession })
+  fire('agent/created', { agent: healAgent })
+  await tools.get('model_orchestrator').execute({ action: 'prefer', preferModel: 'mimo-v2.6-pro', preferProvider: 'trae' })
+
+  // 1) 让偏好模型的唯一车道吃一次车道级判决（地区封锁），并把这一步真的组装一次。
+  healSession.setHeader({ provider: 'trae', model: 'mimo-v2.6-pro' })
+  await fire('agent/request-error', {
+    agent: healAgent,
+    provider: 'trae',
+    failure: { code: 'REGION_BLOCKED', status: 403, message: 'not available in your country' },
+    signal: new AbortController().signal,
+  }, () => Promise.resolve(undefined))
+  await fire('system-prompt:noop', {}, {}, () => undefined)
+  await fire('system-prompt/assemble', { variables: {} }, { agent: healAgent }, () => Promise.resolve({ variables: {} }))
+  const paused = await tools.get('model_orchestrator').execute({ action: 'status', sessionId: 's-heal' })
+  checkThat('偏好确实被暂停了（前置条件）', paused.preference?.suspended === true,
+    JSON.stringify(paused.preference?.exhausted?.reason ?? paused.preference ?? null).slice(0, 120))
+
+  // 2) 车道自己好了（冷却到期 / 当初就是误判），而这条会话**再也不路由**——
+  //    旧代码里它就一直停在「已暂停」。这里只读一次状态，必须自愈。
+  const healedStream = fire('llm/stream', {
+    provider: 'trae',
+    model: 'mimo-v2.6-pro',
+    sessionId: 's-heal',
+    messages: [],
+  }, () => (async function* () {
+    yield { type: 'text-delta', text: 'ok' }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })())
+  for await (const _chunk of healedStream) { /* drain */ }
+
+  const afterHeal = await tools.get('model_orchestrator').execute({ action: 'status', sessionId: 's-heal' })
+  checkThat('只读一次状态就自愈（空闲会话不再粘在降级模式）',
+    afterHeal.preference?.suspended === false,
+    JSON.stringify(afterHeal.preference?.exhausted ?? null).slice(0, 120))
+
+  // 3) 反证：车道仍然坏着的时候，读一百次也不许自愈 —— 否则「自愈」只是把判据关掉。
+  await fire('agent/request-error', {
+    agent: healAgent,
+    provider: 'trae',
+    failure: { code: 'REGION_BLOCKED', status: 403, message: 'not available in your country' },
+    signal: new AbortController().signal,
+  }, () => Promise.resolve(undefined))
+  await fire('system-prompt/assemble', { variables: {} }, { agent: healAgent }, () => Promise.resolve({ variables: {} }))
+  const pausedAgain = await tools.get('model_orchestrator').execute({ action: 'status', sessionId: 's-heal' })
+  checkThat('车道仍然坏着时不会自愈', pausedAgain.preference?.suspended === true,
+    JSON.stringify(pausedAgain.preference?.group?.lanes ?? null).slice(0, 120))
+}
+
 console.log('\n' + (failures === 0 ? 'PASS' : 'FAIL') + ' — ' + (checks - failures) + '/' + checks)
 if (failures > 0) process.exitCode = 1

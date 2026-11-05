@@ -334,10 +334,16 @@ export function scoreLane(row, needs, strategy, health, current, config, now = D
   const cacheLane = needs.cacheLane ?? null
   const holdsCache = cacheLane !== null
     && cacheLane.provider === row.provider && cacheLane.model === row.model
+  // 重读缓存的价格随目标车道缩放（LOCAL PATCH 2026-11-05）：换道要重付的是**这份
+  // 上下文在目标车道上**的钱，便宜车道的重读自然便宜。固定惩罚会让「用 x0.06 的车道
+  // 替换 x2.0 的车道」在效用上永远不划算——那正是额度被最贵车道吃干的机制。
+  const reBillRef = Math.max(0.05, Number(config.cacheRebillRefBurn ?? DEFAULT_CONFIG.cacheRebillRefBurn))
+  const reBillScale = Math.min(1, Math.max(0.1, burn / reBillRef))
   const cachePenalty = holdsCache || !(cacheTokens > 0)
     ? 0
     : Number(config.cacheSwitchPenalty ?? DEFAULT_CONFIG.cacheSwitchPenalty)
       * Math.min(1, cacheTokens / Math.max(1, Number(config.cacheAffinityTokens ?? DEFAULT_CONFIG.cacheAffinityTokens)))
+      * reBillScale
 
   // Live concurrency pressure (see concurrencyPenalty): the only input that
   // describes the present rather than the past.

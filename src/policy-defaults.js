@@ -311,6 +311,16 @@ export const DEFAULT_CONFIG = {
   latencyGateMs: 10_000,
   /** Max utility penalty for abandoning the lane that still holds the prompt cache. */
   cacheSwitchPenalty: 0.35,
+  /**
+   * 缓存重读惩罚的基准 burn（LOCAL PATCH 2026-11-05）。
+   *
+   * 罚分的物理含义是「换道后整个上下文按未命中缓存重新计费」。既然它是**计费**，
+   * 就必须乘上目标车道的价格：换到 x0.06 的车道上，同一份上下文的重读成本只有基准
+   * 车道的几十分之一；旧代码给它一个固定 0.35，于是 x2.0 车道上的一次换道代价恒等于
+   * 昂贵车道的代价，便宜的候选永远追不回来（实测：x0.06 与 x2.0 的效用差只有 0.137，
+   * 而固定惩罚 0.35 ⇒ 净差 -0.213，迁移在结构上不可能发生）。
+   */
+  cacheRebillRefBurn: 0.45,
   /** Cached tokens at which the cache-switch penalty reaches its cap. */
   cacheAffinityTokens: 30_000,
   /** Bonus for keeping the lane and model already in use. */

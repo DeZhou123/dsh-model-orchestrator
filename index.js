@@ -55,7 +55,7 @@ export const name = 'model-orchestrator'
 /** `llm` is what the plugin exists for. The rest degrades feature by feature. */
 export const inject = ['llm']
 
-export const version = '2.6.3'
+export const version = '2.7.0'
 
 /**
  * 这条 provider 是不是「借来的聚合车道」。
@@ -1190,9 +1190,50 @@ export function apply(ctx, rawConfig = {}) {
     return '自动'
   }
 
+  /**
+   * 偏好此刻是不是真的「全灭」——现在这一刻的答案，不是当初记下的那一句。
+   *
+   * 复用 selectRoute 的 prefer 分支本身，不另写一套可用性判据：只有它能保证
+   * 「面板说能用」和「路由真的会用」是同一件事。读不出来时一律返回 true ——
+   * 判据出问题的时候，宁可让偏好继续跑，也不能把会话锁在降级模式里。
+   */
+  function preferenceUsableNow(state) {
+    const config = runtime.config
+    if (config.mode !== 'prefer' || String(config.preferModel ?? '') === '') return true
+    try {
+      const decision = selectRoute({ ...selectionInput(state), mode: 'prefer' })
+      if (decision === null) return false
+      return decision.exhausted === undefined || decision.exhausted === null
+    } catch {
+      return true
+    }
+  }
+
+  /**
+   * 偏好暂停的自愈（LOCAL PATCH 2026-11-05）。
+   *
+   * 事故形状：断网三五分钟把偏好家族判成全灭，`preferenceSuspended` 被置位；而这个
+   * 标记是**会话级内存态**，只在「该会话下一次路由」时才会被重新评估——于是断网时
+   * 恰好空闲的会话，网络恢复后仍然一直显示「已暂停 / 自动」，用户看到的是若干个
+   * 「有的会话退出了偏好模式、有的没有」的会话。
+   *
+   * 自愈的判据必须来自实时评估，而不是「等下一次路由」：谁能保证还有下一次路由？
+   * 所以面板读取状态（preferenceView）和每一次 step 组装（routeForStep）都过一遍这里。
+   */
+  function syncPreference(state) {
+    if (state === undefined || state === null) return false
+    if (runtime.config.mode !== 'prefer') return false
+    if (state.preferenceSuspended !== true) return false
+    if (!preferenceUsableNow(state)) return false
+    return resumePreference(state, '偏好模型重新有可用渠道（实时复核）')
+  }
+
   /** Compute and install the route for the step that is about to assemble. */
   function routeForStep(state, assembly) {
     const config = runtime.config
+    // 先自愈再算模式：否则 effectiveMode 会一直读到那个过期的暂停标记，
+    // 会话就永远停在降级模式里（这正是事故里的「一直显示已暂停」）。
+    if (config.mode === 'prefer') syncPreference(state)
     const mode = effectiveMode(state)
     if (mode === 'off') return null
     // The live assembly is the most reliable "this step can call tools" signal:
@@ -1625,6 +1666,9 @@ export function apply(ctx, rawConfig = {}) {
     } catch {
       group = null
     }
+    // 面板读数之前先自愈一次：面板是用户唯一能看见状态的地方，它不能显示一个
+    // 已经不成立的暂停（LOCAL PATCH 2026-11-05）。
+    if (state !== undefined && state !== null) syncPreference(state)
     return {
       configured: {
         model: config.preferModel,
