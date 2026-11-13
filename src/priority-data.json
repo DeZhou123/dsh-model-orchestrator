@@ -2,11 +2,11 @@
   "source": {
     "reportVersion": "2.1.0",
     "generatedAt": "2026/10/14",
-    "parsedAt": "2026-10-18T09:23:15.325Z",
-    "reportPath": "REPORT-模型测速与优先级.md",
-    "modelCount": 114,
-    "familyCount": 73,
-    "laneCount": 12
+    "parsedAt": "2026-11-13T08:56:09.032Z",
+    "reportPath": "E:\\06AI\\00DeeSeekHarness\\REPORT-模型测速与优先级.md",
+    "modelCount": 121,
+    "familyCount": 79,
+    "laneCount": 13
   },
   "canonical": {
     "mimo-v2.6-pro": "mimo-v2.6-pro",
@@ -28,11 +28,17 @@
     "qwen3.7-plus": "qwen3.7-plus",
     "nemotron-3-ultra-550b-a55b": "nemotron-3-ultra-550b-a55b",
     "minimax-m2.7": "minimax-m2.7",
+    "qwen3.6-27b": "qwen3.6-27b",
+    "qwen3.5-397b-a17b": "qwen3.5-397b-a17b",
     "nemotron-3.5-lightning": "nemotron-3.5-lightning",
     "nemotron-3-super-120b-a12b": "nemotron-3-super-120b-a12b",
+    "gpt-oss-120b": "gpt-oss-120b",
+    "qwen3.5-9b": "qwen3.5-9b",
     "north-mini-code": "north-mini-code",
     "gpt-oss-20b": "gpt-oss-20b",
     "deepseek-v3": "deepseek-v3",
+    "meta-llama-3.3-70b-instruct": "meta-llama-3.3-70b-instruct",
+    "mistral-small-3.2-24b-instruct-2506": "mistral-small-3.2-24b-instruct-2506",
     "kimi-k2.5": "kimi-k2.5",
     "glm-5v-turbo": "glm-5v-turbo",
     "deepseek-v3.1": "deepseek-v3.1",
@@ -81,7 +87,32 @@
     "qwen3.7-flash": "qwen3.7-flash",
     "glm-5.2-arkts-spark": "glm-5.2-arkts-spark",
     "openpangu-2.0-flash": "openpangu-2.0-flash",
-    "openpangu-2.0-pro": "openpangu-2.0-pro"
+    "openpangu-2.0-pro": "openpangu-2.0-pro",
+    "~deepseek/deepseek-flash-latest": "deepseek-v4.1-flash",
+    "~deepseek/deepseek-v4-flash-latest": "deepseek-v4-flash",
+    "cline-pass/kimi-k3.1-pro": "kimi-k3",
+    "cline-pass/mimo-v2.5-pro": "mimo-v2.5",
+    "cline-pass/minimax-m3.1-flash": "minimax-m3.1-flash-preview",
+    "deepseek/deepseek-v3.1-terminus": "deepseek-v3.1",
+    "deepseek/deepseek-v3.2": "deepseek-v3",
+    "deepseek/deepseek-v3.2-exp": "deepseek-v3",
+    "liquid/lfm-2.5-24b-a2b": "lfm-2.5-2.6b",
+    "minimax/minimax-m3.1-flash": "minimax-m3.1-flash-preview",
+    "moonshotai/kimi-k3.1-pro": "kimi-k3",
+    "nvidia/nemotron-3-nano-30b-a3b": "nemotron-3-nano-omni-30b-a3b-reasoning",
+    "qwen/qwen3.5-plus-02-15": "qwen3.5-plus",
+    "qwen/qwen3.5-plus-20260420": "qwen3.5-plus",
+    "qwen/qwen3.8-max-prime": "qwen3.8-max",
+    "xiaomi/mimo-v2.5-pro": "mimo-v2.5",
+    "xiaomi/mimo-v2.6-pro-ultraspeed": "mimo-v2.6-pro",
+    "z-ai/glm-4.7-flash": "glm-4.7",
+    "z-ai/glm-5.3-flashx-legal": "glm-5.3-flash",
+    "z-ai/glm-5.3-prime": "glm-5.3",
+    "kimi-k3.1-pro": "kimi-k3",
+    "minimax-m3.1-flash": "minimax-m3.1-flash-preview",
+    "minimaxai/minimax-m3.1-flash": "minimax-m3.1-flash-preview",
+    "stepfun-ai/step-5-preview": "step-5-preview",
+    "deepseek-v4.1-flash-sg": "deepseek-v4.1-flash"
   },
   "families": {
     "mimo-v2.6-pro": {
@@ -236,6 +267,22 @@
       "note": "NON-COMMERCIAL license",
       "estimated": false
     },
+    "qwen3.6-27b": {
+      "intel": 21,
+      "ttftMs": 3917,
+      "score": null,
+      "fastestLane": "FreeLLMAPI OVH 匿名",
+      "note": "OVH 匿名车道智力最高；262K ctx；reasoning-first",
+      "estimated": false
+    },
+    "qwen3.5-397b-a17b": {
+      "intel": 18,
+      "ttftMs": 1563,
+      "score": null,
+      "fastestLane": "FreeLLMAPI OVH 匿名",
+      "note": "262K ctx；首帧 1.6s 但只吐 reasoning 通道，content 常为空",
+      "estimated": false
+    },
     "nemotron-3.5-lightning": {
       "intel": 13,
       "ttftMs": 2019,
@@ -250,6 +297,22 @@
       "score": 14.5,
       "fastestLane": "免费车道 (免密)",
       "note": "SWE-bench 60.47%; PinchBench 85.6%; degrades b",
+      "estimated": false
+    },
+    "gpt-oss-120b": {
+      "intel": 12,
+      "ttftMs": 3909,
+      "score": null,
+      "fastestLane": "FreeLLMAPI OVH 匿名",
+      "note": "reasoning-first；131K ctx；content 可能为空，需读 reasoning",
+      "estimated": false
+    },
+    "qwen3.5-9b": {
+      "intel": 11,
+      "ttftMs": 25700,
+      "score": null,
+      "fastestLane": "FreeLLMAPI OVH 匿名",
+      "note": "首帧 25.7s，日常不建议用",
       "estimated": false
     },
     "north-mini-code": {
@@ -274,6 +337,22 @@
       "score": 21.8,
       "fastestLane": "TRAE 字节",
       "note": "non-reasoning; $0.02/task (cheapest)",
+      "estimated": false
+    },
+    "meta-llama-3.3-70b-instruct": {
+      "intel": 8,
+      "ttftMs": 3200,
+      "score": null,
+      "fastestLane": "FreeLLMAPI OVH 匿名",
+      "note": "非推理模型，输出稳定；131K ctx",
+      "estimated": false
+    },
+    "mistral-small-3.2-24b-instruct-2506": {
+      "intel": 7,
+      "ttftMs": 2970,
+      "score": null,
+      "fastestLane": "FreeLLMAPI OVH 匿名",
+      "note": "非推理，出正文最快；131K ctx",
       "estimated": false
     },
     "kimi-k2.5": {
@@ -423,7 +502,7 @@
       "ttftMs": 877,
       "score": null,
       "fastestLane": "TRAE 字节",
-      "note": "",
+      "note": "—",
       "estimated": true,
       "laneCount": 1
     },
@@ -533,7 +612,7 @@
       "ttftMs": 1805,
       "score": null,
       "fastestLane": "CodeBuddy/WorkBuddy 腾讯",
-      "note": "",
+      "note": "—",
       "estimated": true,
       "laneCount": 1
     },
@@ -593,7 +672,7 @@
       "ttftMs": 2695,
       "score": null,
       "fastestLane": "MiniMax",
-      "note": "",
+      "note": "—",
       "estimated": true,
       "laneCount": 1
     },
@@ -703,7 +782,7 @@
       "ttftMs": 15700,
       "score": null,
       "fastestLane": "TRAE 字节",
-      "note": "",
+      "note": "—",
       "estimated": true,
       "laneCount": 1
     },
@@ -723,7 +802,7 @@
       "ttftMs": 20700,
       "score": null,
       "fastestLane": "Qoder 中国版 阿里",
-      "note": "",
+      "note": "—",
       "estimated": true,
       "laneCount": 1
     },
@@ -805,6 +884,7 @@
       "outputTokens": 3,
       "byLane": {
         "CodeBuddy/WorkBuddy 腾讯": 1501,
+        "CodeArts 华为云": 1501,
         "LobsterAI 有道": 1168,
         "Loomy 讯飞": 1436,
         "TRAE 字节": 2949,
@@ -886,6 +966,8 @@
       "outputTokens": 12,
       "byLane": {
         "CodeBuddy/WorkBuddy 腾讯": 1737,
+        "CodeArts 华为云": 1737,
+        "DeepSeek 官方": 1737,
         "LobsterAI 有道": 1349,
         "TRAE 字节": 1500
       },
@@ -1148,6 +1230,7 @@
       "ttftMs": 852,
       "outputTokens": 24,
       "byLane": {
+        "DeepSeek 官方": 852,
         "LobsterAI 有道": 852
       },
       "lanes": [
@@ -1155,7 +1238,7 @@
         "LobsterAI 有道"
       ],
       "ok": true,
-      "status": "❌ in-stream QUOTA: Insufficient Bala"
+      "status": "ok"
     },
     "qwen3.8-max": {
       "id": "qwen3.8-max",
@@ -2253,7 +2336,7 @@
     },
     "sn-sensenova-6-8-flash-lite": {
       "id": "sn-sensenova-6-8-flash-lite",
-      "family": "sn-sensenova-6-8-flash-lite",
+      "family": "sensenova-6.8-flash-lite",
       "intel": null,
       "ttftMs": 3089,
       "outputTokens": 97,
@@ -2268,7 +2351,7 @@
     },
     "sn-sensenova-6-8-flash": {
       "id": "sn-sensenova-6-8-flash",
-      "family": "sn-sensenova-6-8-flash",
+      "family": "sensenova-6.8-flash",
       "intel": null,
       "ttftMs": 16200,
       "outputTokens": 886,
@@ -2548,12 +2631,117 @@
       ],
       "ok": true,
       "status": "ok"
+    },
+    "qwen3.6-27b": {
+      "id": "qwen3.6-27b",
+      "family": "qwen3.6-27b",
+      "intel": 21,
+      "ttftMs": 3917,
+      "outputTokens": 2,
+      "byLane": {
+        "FreeLLMAPI OVH 匿名": 3917
+      },
+      "lanes": [
+        "FreeLLMAPI OVH 匿名"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "qwen3.5-397b-a17b": {
+      "id": "qwen3.5-397b-a17b",
+      "family": "qwen3.5-397b-a17b",
+      "intel": 18,
+      "ttftMs": 1563,
+      "outputTokens": null,
+      "byLane": {
+        "FreeLLMAPI OVH 匿名": 1563
+      },
+      "lanes": [
+        "FreeLLMAPI OVH 匿名"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "gpt-oss-120b": {
+      "id": "gpt-oss-120b",
+      "family": "gpt-oss-120b",
+      "intel": 12,
+      "ttftMs": 3909,
+      "outputTokens": 2,
+      "byLane": {
+        "FreeLLMAPI OVH 匿名": 3909
+      },
+      "lanes": [
+        "FreeLLMAPI OVH 匿名"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "qwen3.5-9b": {
+      "id": "qwen3.5-9b",
+      "family": "qwen3.5-9b",
+      "intel": 11,
+      "ttftMs": 25700,
+      "outputTokens": 2,
+      "byLane": {
+        "FreeLLMAPI OVH 匿名": 25700
+      },
+      "lanes": [
+        "FreeLLMAPI OVH 匿名"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "meta-llama-3.3-70b-instruct": {
+      "id": "meta-llama-3.3-70b-instruct",
+      "family": "meta-llama-3.3-70b-instruct",
+      "intel": 8,
+      "ttftMs": 3200,
+      "outputTokens": 2,
+      "byLane": {
+        "FreeLLMAPI OVH 匿名": 3200
+      },
+      "lanes": [
+        "FreeLLMAPI OVH 匿名"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "mistral-small-3.2-24b-instruct-2506": {
+      "id": "mistral-small-3.2-24b-instruct-2506",
+      "family": "mistral-small-3.2-24b-instruct-2506",
+      "intel": 7,
+      "ttftMs": 2970,
+      "outputTokens": 2,
+      "byLane": {
+        "FreeLLMAPI OVH 匿名": 2970
+      },
+      "lanes": [
+        "FreeLLMAPI OVH 匿名"
+      ],
+      "ok": true,
+      "status": "ok"
+    },
+    "gpt-oss-20b": {
+      "id": "gpt-oss-20b",
+      "family": "gpt-oss-20b",
+      "intel": 9,
+      "ttftMs": 1962,
+      "outputTokens": 2,
+      "byLane": {
+        "FreeLLMAPI OVH 匿名": 1962
+      },
+      "lanes": [
+        "FreeLLMAPI OVH 匿名"
+      ],
+      "ok": true,
+      "status": "ok"
     }
   },
   "lanes": [
     {
       "name": "CodeBuddy/WorkBuddy 腾讯",
-      "meta": "17 个家族，17 个实测成功",
+      "meta": "17 个家族，18 个实测成功",
       "families": [
         "step-5-preview",
         "glm-5.3",
@@ -2578,7 +2766,7 @@
     },
     {
       "name": "CodeArts 华为云",
-      "meta": "8 个家族，8 个实测成功",
+      "meta": "7 个家族，8 个实测成功",
       "families": [
         "glm-5.3-flash",
         "deepseek-v4-flash",
@@ -2589,7 +2777,7 @@
         "openpangu-2.0-pro"
       ],
       "modelCount": 8,
-      "okCount": 6
+      "okCount": 8
     },
     {
       "name": "DeepSeek 官方",
@@ -2599,34 +2787,34 @@
         "deepseek-v4.1-flash"
       ],
       "modelCount": 2,
-      "okCount": 0
+      "okCount": 2
     },
     {
       "name": "LobsterAI 有道",
       "meta": "30 个家族，30 个实测成功",
       "families": [
-        "qwen3.8-max",
         "glm-5.3",
         "glm-5.3-flash",
-        "kimi-k3",
         "deepseek-v4-flash",
         "deepseek-v4-pro",
         "glm-5.2",
         "minimax-m3",
         "kimi-k2.6",
+        "glm-5.1",
+        "glm-5v-turbo",
+        "kimi-k2.8-preview",
+        "deepseek-v4.1-flash",
+        "qwen3.8-max",
+        "kimi-k3",
         "kimi-k2.7-code",
         "minimax-m2.7",
         "qwen3.7-plus",
-        "glm-5.1",
         "kimi-k2.5",
         "qwen3.8-flash",
         "kimi-k2.7-code-highspeed",
         "minimax-m3.1-flash-preview",
         "qwen3.8-omni-flash",
-        "deepseek-v4.1-flash",
-        "glm-5v-turbo",
         "deepseek-v4-flash-vision-exp",
-        "kimi-k2.8-preview",
         "doubao-seed-2.1-turbo",
         "glm-5.3-flashx",
         "doubao-seed-2.1-pro",
@@ -2643,13 +2831,13 @@
       "name": "Loomy 讯飞",
       "meta": "10 个家族，10 个实测成功",
       "families": [
-        "qwen3.8-max",
         "glm-5.3-flash",
-        "deepseek-v4-flash",
         "deepseek-v4.1-flash",
         "minimax-m3",
         "kimi-k2.6",
         "qwen3.8-flash",
+        "qwen3.8-max",
+        "deepseek-v4-flash",
         "mimo-v2.5",
         "auto",
         "spark-x2.5"
@@ -2671,7 +2859,7 @@
     },
     {
       "name": "免费车道 (免密)",
-      "meta": "24 个家族，23 个实测成功",
+      "meta": "24 个家族，25 个实测成功",
       "families": [
         "step-5-preview",
         "glm-5.3",
@@ -2715,6 +2903,7 @@
       "name": "Qoder 中国版 阿里",
       "meta": "14 个家族，14 个实测成功",
       "families": [
+        "auto",
         "qwen3.8-max",
         "glm-5.3",
         "glm-5.3-flash",
@@ -2726,7 +2915,6 @@
         "qwen3.7-plus",
         "qwen3.8-flash",
         "kimi-k2.8-preview",
-        "auto",
         "qwen3.7-max",
         "qwen3.7-flash"
       ],
@@ -2741,47 +2929,47 @@
         "glm-5.3-flash",
         "kimi-k3",
         "deepseek-v4.1-flash",
-        "sn-sensenova-6-8-flash-lite",
-        "sn-sensenova-6-8-flash"
+        "sensenova-6.8-flash-lite",
+        "sensenova-6.8-flash"
       ],
       "modelCount": 6,
       "okCount": 6
     },
     {
       "name": "TRAE 字节",
-      "meta": "36 个家族，36 个实测成功",
+      "meta": "36 个家族，37 个实测成功",
       "families": [
-        "qwen3.8-max",
         "step-5-preview",
         "glm-5.3",
         "glm-5.3-flash",
-        "kimi-k3",
-        "mimo-v2.6-pro",
         "deepseek-v4-flash",
         "deepseek-v4.1-flash",
         "deepseek-v4-pro",
         "glm-5.2",
         "minimax-m3",
         "kimi-k2.6",
-        "mimo-v2.6-flash",
+        "glm-5.1",
+        "glm-5v-turbo",
+        "kimi-k2.8-preview",
+        "qwen3.8-max",
+        "kimi-k3",
         "kimi-k2.7-code",
         "minimax-m2.7",
-        "qwen3.7-plus",
-        "glm-5.1",
-        "deepseek-v3",
         "kimi-k2.5",
         "qwen3.8-flash",
+        "glm-5.3-flashx",
+        "glm-5",
+        "mimo-v2.6-pro",
+        "mimo-v2.6-flash",
+        "qwen3.7-plus",
+        "deepseek-v3",
         "doubao-2.0-mini",
         "multimodal_image_kimi-k2.5",
-        "glm-5v-turbo",
         "doubao-seed-2.0-code",
-        "kimi-k2.8-preview",
         "doubao-seed-2.1-turbo",
         "deepseek-v3.1",
-        "glm-5.3-flashx",
         "code-review-judge",
         "doubao-seed-2.1-pro",
-        "glm-5",
         "qwen3.6-plus",
         "doubao-seed-evolving",
         "doubao-seed-code",
@@ -2800,6 +2988,21 @@
       ],
       "modelCount": 2,
       "okCount": 2
+    },
+    {
+      "name": "FreeLLMAPI OVH 匿名",
+      "meta": "7 个家族，7 个实测成功",
+      "families": [
+        "qwen3.6-27b",
+        "qwen3.5-397b-a17b",
+        "gpt-oss-120b",
+        "qwen3.5-9b",
+        "meta-llama-3.3-70b-instruct",
+        "mistral-small-3.2-24b-instruct-2506",
+        "gpt-oss-20b"
+      ],
+      "modelCount": 7,
+      "okCount": 7
     }
   ],
   "unusable": [

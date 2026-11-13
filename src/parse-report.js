@@ -108,6 +108,7 @@ export function parseReport(markdown) {
   const unscored = []
   const lanes = []
   const unusable = []
+  const aliases = []
 
   let section = ''
 
@@ -204,6 +205,28 @@ export function parseReport(markdown) {
       continue
     }
 
+    // ── section 九: alias / fingerprint table ────────────────────────────
+    // A channel can advertise the same weights under a name nothing else uses
+    // (`gfmodel`, `kmodel_latest`, `~deepseek/deepseek-flash-latest`). Patterns
+    // in families.js guess those at 0.65-0.7 confidence; this table records the
+    // ones that were verified, so the guess stops being a guess.
+    if (section === '九' && line.trim().startsWith('| 别名')) {
+      const table = readTable(lines, i)
+      for (const row of table.rows) {
+        const alias = codeId(row[0] ?? '')
+        const family = codeId(row[1] ?? '') || cell(row[1] ?? '')
+        if (alias === '' || family === '') continue
+        aliases.push({
+          alias,
+          family,
+          confidence: cell(row[2] ?? ''),
+          evidence: cell(row[3] ?? ''),
+        })
+      }
+      i = table.end - 1
+      continue
+    }
+
     // ── section 七: models whose every lane failed ───────────────────────
     if (section === '七' && line.trim().startsWith('| `')) {
       const row = cells(line)
@@ -212,7 +235,7 @@ export function parseReport(markdown) {
     }
   }
 
-  return { reportVersion, generatedAt, families, lanes, estimates, unscored, unusable }
+  return { reportVersion, generatedAt, families, lanes, estimates, unscored, unusable, aliases }
 }
 
 export default parseReport

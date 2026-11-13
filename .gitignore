@@ -5,3 +5,12 @@ backup-*/
 *.bak-*
 .DS_Store
 *.tmp
+
+# Local measurement evidence (regenerable, large) — never ship
+_fp/
+_catalog-*.json
+_merged-*.json
+_report-fragment*
+_cand-report.md
+_tmp-*.log
+_smoke.log

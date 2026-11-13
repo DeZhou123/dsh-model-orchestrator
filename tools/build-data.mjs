@@ -20,7 +20,9 @@ import { resolveFamily, normalizeModelId } from '../src/families.js'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '..')
 
-const DEFAULT_REPORT = process.env.DSH_MODEL_REPORT ?? path.join(ROOT, 'REPORT-模型测速与优先级.md')
+// Same path tools/smoke.mjs asserts against: the report lives at the workspace
+// root, one level above the package, not inside it.
+const DEFAULT_REPORT = process.env.DSH_MODEL_REPORT ?? path.resolve(ROOT, '..', 'REPORT-模型测速与优先级.md')
 
 const reportPath = process.argv[2] ?? DEFAULT_REPORT
 if (!fs.existsSync(reportPath)) {
@@ -38,6 +40,11 @@ for (const estimate of report.estimates) {
 }
 for (const entry of report.unscored) {
   if (canonical[entry.id.toLowerCase()] === undefined) canonical[entry.id.toLowerCase()] = entry.id
+}
+// Verified aliases win over the shipped map: a fingerprint row is evidence,
+// not a pattern guess, so it may overwrite an earlier entry.
+for (const entry of report.aliases ?? []) {
+  canonical[entry.alias.toLowerCase()] = entry.family
 }
 
 // ── families ────────────────────────────────────────────────────────────────

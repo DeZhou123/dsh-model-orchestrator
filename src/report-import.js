@@ -36,6 +36,11 @@ export function datasetFromReport(markdown, options = {}) {
   for (const entry of report.unscored) {
     if (canonical[entry.id.toLowerCase()] === undefined) canonical[entry.id.toLowerCase()] = entry.id
   }
+  // Verified aliases win over the shipped map: a fingerprint row is evidence,
+  // not a pattern guess, so it may overwrite an earlier entry.
+  for (const entry of report.aliases ?? []) {
+    canonical[entry.alias.toLowerCase()] = entry.family
+  }
 
   const families = {}
   for (const family of report.families) {
