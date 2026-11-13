@@ -30,6 +30,11 @@
  * @module src/inflight
  */
 
+/** Count for one route/provider, always a non-negative integer. */
+function normalize(value) {
+  const number = Number(value)
+  return Number.isFinite(number) && number > 0 ? Math.floor(number) : 0
+}
 
 /**
  * Create the in-flight registry.
@@ -161,7 +166,7 @@ export function createInflight(options = {}) {
     live.clear()
   }
 
-  return { begin, of, lane, pressure, snapshot, total, reset, routeKey, staleMs }
+  return { begin, of, lane, pressure, snapshot, total, reset, routeKey, staleMs, normalize }
 }
 
 export default createInflight

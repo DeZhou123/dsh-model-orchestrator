@@ -1,0 +1,157 @@
+/**
+ * 渠道互借 · 借用方（Host 半）：把对侧的一条 provider 变成自己的普通 provider。
+ *
+ * ## 形状
+ *
+ * 本机注册**一条** provider 路由（默认名 peer），它下面挂着对侧愿意出借的每一个
+ * provider/model —— 每个都是一个 model id（就是 provider/model 这个字符串本身）。
+ * 于是模型选择器、目录刷新、路由打分、健康账本全部照旧工作，不需要任何特殊分支：
+ * 「借来的车道」在系统里就是一条车道。
+ *
+ * ⚠️ model id 里可能本身带 /（opencode/deepseek-v4.1-flash），所以**不要**按 /
+ * 切分还原对端路由，一律走 listModels 时建立的映射表。
+ *
+ * ## 为什么用 node:http 而不是 fetch
+ *
+ * 这条链路是长连接 + 逐块消费 + 中途 abort。node:http 的 req/res 语义在这里更直接，
+ * 也不会因为 undici 的 body reader 细节（背压、cancel 传播）引入难以复现的挂起。
+ *
+ * ## 图片不过界
+ *
+ * 图片块引用的是**本机**的附件 id，对侧读不到。与其静默降级成「模型看不到图却照答」，
+ * 不如让它成为一条硬约束：本适配器不声明 image 模态（路由层因此不会把带图请求派给
+ * 借用车道），真收到图片块时明确报错。
+ *
+ * @module src/peershare-adapter
+ */
+
+import http from 'node:http'
+import { PEERSHARE_PROTOCOL } from './peershare.js'
+
+/** 单次请求的空闲超时：这么久一个字节都没来，就认为对侧卡死。 */
+const IDLE_TIMEOUT_MS = 120_000
+
+/** 一次 listModels 的超时。 */
+const LIST_TIMEOUT_MS = 15_000
+
+/** 把对侧的错误行变成一个带 code/status 的 Error（harness 会把它转成 failure chunk）。 */
+function peerError(payload) {
+  const error = new Error(String(payload?.message ?? 'peershare 上游失败'))
+  error.code = String(payload?.code ?? 'PEERSHARE_UPSTREAM')
+  if (Number.isFinite(Number(payload?.status))) error.status = Number(payload.status)
+  return error
+}
+
+/** 一条 base URL 归一成不带尾斜杠的形态。 */
+export function normalizePeerUrl(value) {
+  const text = String(value ?? '').trim()
+  if (text === '') return ''
+  return text.replace(/\/+$/, '')
+}
+
+/** 发一个 JSON 请求，返回解析后的响应体。用于 hello / models 这类短请求。 */
+function postJson(url, token, body, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let target
+    try {
+      target = new URL(url)
+    } catch {
+      reject(new Error('对侧地址不合法：' + url))
+      return
+    }
+    const payload = JSON.stringify(body)
+    const request = http.request({
+      host: target.hostname,
+      port: target.port === '' ? 80 : Number(target.port),
+      path: target.pathname + target.search,
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json; charset=utf-8',
+        'content-length': Buffer.byteLength(payload),
+        authorization: 'Bearer ' + token,
+        'x-peershare-hop': '1',
+      },
+    }, (response) => {
+      const chunks = []
+      response.on('data', chunk => chunks.push(chunk))
+      response.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8')
+        try {
+          resolve({ status: response.statusCode ?? 0, body: text === '' ? {} : JSON.parse(text) })
+        } catch {
+          reject(new Error('对侧返回的不是 JSON（HTTP ' + response.statusCode + '）：' + text.slice(0, 200)))
+        }
+      })
+    })
+    const timer = setTimeout(() => request.destroy(new Error('对侧在 ' + timeoutMs + 'ms 内没有响应')), timeoutMs)
+    timer.unref?.()
+    request.on('error', (error) => {
+      clearTimeout(timer)
+      reject(error)
+    })
+    request.on('close', () => clearTimeout(timer))
+    request.end(payload)
+  })
+}
+
+/** 发一个 GET 短请求。 */
+function getJson(url, token, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let target
+    try {
+      target = new URL(url)
+    } catch {
+      reject(new Error('对侧地址不合法：' + url))
+      return
+    }
+    const request = http.request({
+      host: target.hostname,
+      port: target.port === '' ? 80 : Number(target.port),
+      path: target.pathname + target.search,
+      method: 'GET',
+      headers: { authorization: 'Bearer ' + token, 'x-peershare-hop': '1' },
+    }, (response) => {
+      const chunks = []
+      response.on('data', chunk => chunks.push(chunk))
+      response.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8')
+        try {
+          resolve({ status: response.statusCode ?? 0, body: text === '' ? {} : JSON.parse(text) })
+        } catch {
+          reject(new Error('对侧返回的不是 JSON（HTTP ' + response.statusCode + '）'))
+        }
+      })
+    })
+    const timer = setTimeout(() => request.destroy(new Error('对侧在 ' + timeoutMs + 'ms 内没有响应')), timeoutMs)
+    timer.unref?.()
+    request.on('error', (error) => {
+      clearTimeout(timer)
+      reject(error)
+    })
+    request.on('close', () => clearTimeout(timer))
+    request.end()
+  })
+}
+
+/** 把 options 里不可 JSON 化的成员摘掉（signal 是活对象）。 */
+function serializableOptions(options) {
+  const out = {}
+  for (const [key, value] of Object.entries(options ?? {})) {
+    if (key === 'signal' || key === 'provider' || key === 'model' || key === 'sessionId') continue
+    if (value === undefined) continue
+    out[key] = value
+  }
+  return out
+}
+
+/** 请求里是否带图片块。 */
+function hasImage(messages) {
+  for (const message of Array.isArray(messages) ? messages : []) {
+    for (const block of Array.isArray(message?.content) ? message.content : []) {
+      if (block?.type === 'image') return true
+    }
+  }
+  return false
+}
+
+export default null
