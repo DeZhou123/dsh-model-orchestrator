@@ -96,11 +96,64 @@ export const COOLDOWN = {
   rate: 20_000,
   rateMax: 5 * 60_000,
   transient: 30_000,
+  /**
+   * 瞬时故障连败后的冷却上限（LOCAL PATCH 2026-11-14）。
+   *
+   * 旧行为：transient 的退避是 `30s × 1.5^strikes`，但**封顶在 rateMax = 5 分钟**。
+   * 而真正连败的线路根本不是 5 分钟能好的：近三天会话日志里
+   * `transport error: fetch failed` 一条线上出现 48 次（trae）、39 次（qoder）、
+   * 17 次（raccoon），每次只停 30 秒~5 分钟，于是同一个死车道在一轮对话里被
+   * 反复选中、反复失败。封顶放宽到 30 分钟，让「这条线现在不通」真的能停一会儿，
+   * 同时仍然留出自动恢复的余地（成功一次即清账，见 markSuccess）。
+   */
+  transientMax: 30 * 60_000,
   auth: 30 * 60_000,
+  /** auth 类连败的上限：凭据不会自己修好，反复回锅只是反复让整轮报错。 */
+  authMax: 6 * 60 * 60_000,
+  /**
+   * 「未配置凭据 / 请先登录」——这不是故障，是**没登录**。
+   *
+   * 实测（2026-11-13）：workbuddy 车道 status=auth、冷却 30 分钟，到期后被再次选中，
+   * 立刻以 `未配置凭据，请先登录` 结束整轮（turn/end kind:error ×2）。等 30 分钟
+   * 不会让任何人去登录，所以这一类按 12 小时停车；用户登录后一次成功调用即清账。
+   */
+  credential: 12 * 60 * 60_000,
+  /**
+   * 订阅/套餐不可用（试用到期、未订阅该模型）。
+   *
+   * 实测：qoder/qodercn 返回 `{"pricingUrl":...} (112/model_error)` 与
+   * cline `Error 403: the user is not subscribed to required model plan`——三天内
+   * 合计 55 次重试。它们既不匹配 QUOTA_TEXT（没有 quota/额度字样）也不匹配
+   * AUTH 的语义（凭据是好的，是**套餐**不在），旧代码把它们判成 30 秒的 transient，
+   * 于是每一轮都在撞同一堵墙。6 小时停车，用成功调用或手动点击恢复。
+   */
+  plan: 6 * 60 * 60_000,
   unavailable: 10 * 60_000,
   region: 24 * 60 * 60_000,
   quotaFallback: 60 * 60_000,
   quotaDayRollover: true,
+}
+
+/**
+ * 同一条路线上的**同类失败**连续出现时的冷却升级（LOCAL PATCH 2026-11-14）。
+ *
+ * 为什么需要它：各类冷却本身都是常数（auth 固定 30 分钟、transient 有 5 分钟上限），
+ * 而账本里的 strikes 会按 3 小时半衰期衰减——一条**每半小时失败一次**的车道，
+ * 每次失败时衰减后的 strikes 都回到 0 附近，于是它的冷却永远是初始值，永远在同一
+ * 个时间尺度上回锅。这不是"抖动"，这是"这条路就是不通"。
+ *
+ * 判据刻意与 FAILURE_BURST 分开：burst 判的是"同一件事被报了两次"（去重），
+ * 这里判的是"同一件事**一次又一次**发生"（升级）。两者的窗口与后果都不同——
+ * burst 不延长冷却，升级才延长。
+ */
+export const ESCALATION = {
+  /** 两次同类失败相隔多久之内算"连着来"。 */
+  windowMs: 30 * 60_000,
+  /** 第几次连着来开始升级（第 2 次即 ×2）。 */
+  minRun: 2,
+  /** 每次连败的倍数与倍数上限。 */
+  factor: 2,
+  maxFactor: 8,
 }
 
 /**
@@ -309,6 +362,22 @@ export const DEFAULT_CONFIG = {
   longContextThreshold: 120_000,
   /** First-token latency at which a lane's speed score is 0.5 (0 disables). */
   latencyGateMs: 10_000,
+  /**
+   * 陈旧但真实的延迟读数该怎么算（LOCAL PATCH 2026-11-14）。
+   *
+   * 事故形状：our-free-model 的 `deepseek-ai/deepseek-v4.1-flash` 实测首字
+   * **304 秒**（免费池排队），但这条记录 lastOkAt 超过 2 小时后被判为"过期"，
+   * latencyFor 于是回退到 report/unknown，速度项拿到**中性**的 0.5——"我们不知道它多慢"
+   * 与"我们知道它慢得不可用"被当成了同一件事。结果是偏好模式在这条车道上坐着出字，
+   * 用户看到的是"经常卡住"（同期 `upstream stream idle past its deadline` 14 次）。
+   *
+   * `penalize` — 过期读数仍参与打分（source='stale'）：一次成功调用会刷新 EWMA，
+   * 车道自己就能翻案，所以这不是永久门槛；
+   * `neutral`  — 旧行为，把过期读数当未知。
+   */
+  staleLatencyMode: 'penalize',
+  /** 同一条路线同类失败连败时，冷却按 ESCALATION 升级（关掉 = 每次都用基础冷却）。 */
+  sameKindEscalation: true,
   /** Max utility penalty for abandoning the lane that still holds the prompt cache. */
   cacheSwitchPenalty: 0.35,
   /**

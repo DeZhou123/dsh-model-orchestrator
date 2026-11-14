@@ -201,24 +201,42 @@ export function channelStats(row) {
 /**
  * The latency a lane is judged on, and where that number came from.
  *
- * Four sources, in strict order of authority:
+ * Sources, in strict order of authority:
  *
  * 1. what this machine measured in the last two hours (>= 2 samples);
- * 2. the channel pack's own ledger for today (the exact lane, not a family);
- * 3. the report's per-lane figure (again the exact lane/model pair);
- * 4. a structural floor for a lane known to be slow.
+ * 2. the same measurement when it is older than that — still the best evidence
+ *    this machine has, see the stale branch below (LOCAL PATCH 2026-11-14);
+ * 3. the channel pack's own ledger for today (the exact lane, not a family);
+ * 4. the report's per-lane figure (again the exact lane/model pair);
+ * 5. a structural floor for a lane known to be slow.
  *
  * A family's fastest-lane number is deliberately NOT a source: a 45-second lane
  * inheriting a 1-second lane's speed is the largest single reason the old
  * ordering looked wrong.
  */
-export function latencyFor(row, health, now = Date.now()) {
+export function latencyFor(row, health, now = Date.now(), options = {}) {
   const observed = health.observed(row.provider, row.model)
   const live = Number.isFinite(observed?.ttftMs) && observed.ttftMs > 0
     && Number(observed.samples ?? 0) >= MIN_SAMPLES
     && Number(observed.lastOkAt ?? 0) > 0
     && now - Number(observed.lastOkAt) <= OBSERVATION_STALE_MS
   if (live) return { ms: Math.round(observed.ttftMs), source: 'live', samples: observed.samples }
+
+  // ── 过期但**真实**的读数（LOCAL PATCH 2026-11-14）───────────────────────────
+  //
+  // 事故形状：our-free-model 的 `deepseek-ai/deepseek-v4.1-flash` 实测首字 304 秒
+  // （免费池排队），但这条记录 lastOkAt 超过两小时被判过期，于是掉进「未知」拿到中性的
+  // 速度分 0.5——「我们不知道它多慢」和「我们知道它慢得不能用」被当成了同一件事。
+  // 同期 `upstream stream idle past its deadline` 出现 14 次，用户看到的是「经常卡死」。
+  //
+  // 一次成功调用就会刷新 lastOkAt 与 EWMA，车道随即回到 live 分支，所以这不是永久判决；
+  // 宁可让它慢的车道自己用成绩证明自己，也不要让「没数据」自动等于「还行」。
+  if (observed !== null && observed !== undefined
+    && Number.isFinite(observed.ttftMs) && observed.ttftMs > 0
+    && Number(observed.samples ?? 0) >= MIN_SAMPLES
+    && options.staleLatencyMode !== 'neutral') {
+    return { ms: Math.round(observed.ttftMs), source: 'stale', samples: observed.samples }
+  }
 
   const today = channelStats(row)
   if (today !== null
@@ -303,7 +321,7 @@ export function inspectLane(row, input) {
 export function scoreLane(row, needs, strategy, health, current, config, now = Date.now(), inflight = null) {
   const weights = STRATEGIES[strategy] ?? STRATEGIES.balanced
   const state = health.stateOf(row.provider, row.model)
-  const latency = latencyFor(row, health, now)
+  const latency = latencyFor(row, health, now, { staleLatencyMode: config.staleLatencyMode })
   const gate = Number(config.latencyGateMs ?? DEFAULT_GATE_MS)
   const speed = latency.ms === null || !(gate > 0)
     ? 0.5
@@ -431,7 +449,15 @@ export function evaluate(input) {
   const needs = input.needs ?? readNeeds({}, config)
   const strategy = strategyFor(needs, config)
   const now = input.now ?? Date.now()
-  const base = { needs, config, health, now, exclude: input.exclude, minContextWindow: input.minContextWindow, lanePolicy: input.lanePolicy ?? null }
+  const base = {
+    needs,
+    config,
+    health,
+    now,
+    exclude: input.exclude,
+    minContextWindow: input.minContextWindow,
+    lanePolicy: input.lanePolicy ?? null,
+  }
 
   const inspectAll = (visionFallback) => rows.map(row => ({
     row,
@@ -439,6 +465,36 @@ export function evaluate(input) {
   }))
 
   let all = inspectAll(false)
+
+  // ── 本 step 内「这个家族不用再试了」（LOCAL PATCH 2026-11-14）────────────────
+  //
+  // 事实：偏好家族 deepseek-v4.1-flash 挂 16 条同名车道，其中 13 条可能同时不可用
+  // （未登录 / 未订阅 / 额度到中午 / 被屏蔽 / 安全拦截）。失败恢复的既有规则是
+  // "先在同一家族换个渠道"，于是三次 maxSwitchesPerStep 全花在同一个家族的兄弟
+  // 车道上，整轮以最后一个错误结束——连"换一个模型"这一步都没走到。用户看到的就是
+  // "经常报错、经常停止"。
+  //
+  // 判据的边界（为什么必须带 survivor 守卫）：这条规则只在**过滤之后仍有别的家族
+  // 可用**时才生效。否则一个只挂了一两个家族的目录会因为"这个家族刚失败过"直接变成
+  // 全灭，把一次瞬时故障升级成整轮失败——比它要修的问题更贵。
+  const excludedFamilies = input.excludeFamilies
+  if (excludedFamilies !== null && excludedFamilies !== undefined && excludedFamilies.size > 0) {
+    const familyOf = entry => entry.row.key ?? entry.row.family ?? entry.row.model
+    const survivor = all.some(entry => entry.inspection.eligible && !excludedFamilies.has(familyOf(entry)))
+    if (survivor) {
+      all = all.map(entry => (excludedFamilies.has(familyOf(entry))
+        ? {
+            row: entry.row,
+            inspection: {
+              eligible: false,
+              familyParked: true,
+              reason: '同一家族在本步骤内已连续失败，本轮改试其它模型',
+            },
+          }
+        : entry))
+    }
+  }
+
   // ── 渠道互借：借用车道默认只在「本机全灭」时才参战 ─────────────────────────
   // 互借的语义是兜底，不是常态：把借来的额度当成首选，等于用对侧的账号替本机烧钱，
   // 而且一旦对侧断线，本机明明有可用车道却先撞墙。所以 exhausted 模式下先看本机：
@@ -707,6 +763,9 @@ export function selectRoute(input) {
         reason: entry.inspection.reason ?? '',
         cooldownMs: Math.max(0, Number(entry.inspection.until ?? 0) - evaluation.now),
       })),
+      // 被用户自己的 deny 挡住的那几条（见 preferenceConflicts）：它们不会随时间
+      // 恢复，通知与面板必须点出来，否则"偏好模式坏了"这个误判会一直成立。
+      conflicts: preferred === null ? [] : preferenceConflicts(preferred),
       at: evaluation.now,
     }
     const fallback = input.modeFallback ?? 'auto'
@@ -839,6 +898,45 @@ function summarizeGroup(group) {
   }
 }
 
+/**
+ * 目录层给「被用户自己屏蔽」的车道写的 reason 前缀（见 src/catalog.js 的
+ * decorate()：`用户屏蔽：${extraDeny}`）。
+ *
+ * 复制常量而不是从 catalog 导入，是因为 router 不该依赖目录层的实现；代价是它可能
+ * 漂移，所以 smoke 里有一条用例专门断言「被 deny 的行确实带这个前缀」。
+ */
+export const DENY_REASON_PREFIX = '用户屏蔽：'
+
+/**
+ * 偏好家族里被用户自己的 deny 列表挡住的渠道。
+ *
+ * 为什么值得单独列出来：偏好模式的"全灭"有两种，用户的处置完全不同——
+ *   · 渠道真的坏了/冷却中：等它就够了；
+ *   · 渠道被自己的 deny 挡住：**等一千年也不会好**，只能去删 deny 项。
+ * 旧代码把两者混成一句「全部 N 条渠道不可用」，于是 2026-11-13 那次事故里
+ * 用户看到的是"偏好模式坏了"，实际是两条健康的 OFM 免费 flash 车道被
+ * `our-free-model/deepseek-v4.1-flash-free` 这类陈旧 deny 项挡在门外，
+ * 而他手动选同一车道时请求根本不经过 deny（选择器直接指定路由）。
+ *
+ * @param {object|null} group - the preferred group from evaluate/resolvePreferenceGroup.
+ * @returns {Array<{provider: string, model: string, modelName: string, denyEntry: string}>}
+ */
+export function preferenceConflicts(group) {
+  if (group === null || group === undefined) return []
+  const out = []
+  for (const entry of group.all ?? []) {
+    const reason = String(entry?.inspection?.reason ?? '')
+    if (!reason.startsWith(DENY_REASON_PREFIX)) continue
+    out.push({
+      provider: String(entry.row?.provider ?? ''),
+      model: String(entry.row?.model ?? ''),
+      modelName: String(entry.row?.modelName ?? entry.row?.model ?? ''),
+      denyEntry: reason.slice(DENY_REASON_PREFIX.length).trim(),
+    })
+  }
+  return out
+}
+
 /** Explain why a preferred group cannot serve, in one sentence. */
 export function explainExhausted(group, now) {
   if (group.lanes.length > 0) return '可用'
@@ -852,11 +950,18 @@ export function explainExhausted(group, now) {
     }
   }
   const detail = [...reasons.entries()].map(([reason, count]) => reason + '×' + count).join('，')
+  // 被自己的 deny 挡住的部分必须单独说，并给出可执行的下一步：它不会随时间恢复。
+  const conflicts = preferenceConflicts(group)
+  const conflictNote = conflicts.length === 0
+    ? ''
+    : '其中 ' + conflicts.length + ' 条是被你自己的屏蔽列表挡住的（'
+      + conflicts.map(conflict => conflict.denyEntry).join('、')
+      + '），删除对应 deny 项即可立刻恢复；'
   if (soonest > now) {
     const minutes = Math.max(1, Math.round((soonest - now) / 60_000))
-    return '全部 ' + group.all.length + ' 条渠道不可用（' + detail + '），最早约 ' + minutes + ' 分钟后恢复'
+    return conflictNote + '全部 ' + group.all.length + ' 条渠道不可用（' + detail + '），最早约 ' + minutes + ' 分钟后恢复'
   }
-  return '全部 ' + group.all.length + ' 条渠道不可用（' + detail + '）'
+  return conflictNote + '全部 ' + group.all.length + ' 条渠道不可用（' + detail + '）'
 }
 
 function findKey(allGroups, anchor) {

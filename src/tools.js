@@ -45,7 +45,7 @@ export function registerAgentSurface(options) {
         'status —— 当前实际使用的模型、其渠道健康、按优先级排好的模型组与最近切换记录；',
         'explain —— 上一次为什么选了这个模型/渠道（含各项打分）；',
         'lanes —— 列出当前可用的模型组及其渠道覆盖（多模型多渠道对比）；',
-        'set —— 改调度设置（mode/strategy/preferModel/preferProvider/preferFallback/turnTokenBudget/deny/allow/denyProviders/reasoningEffort/routeFirstTurn/autoSelect）；',
+        'set —— 改调度设置（mode/strategy/preferModel/preferProvider/preferFallback/turnTokenBudget/deny/allow/denyProviders/reasoningEffort/routeFirstTurn/autoSelect/sameKindEscalation/staleLatencyMode）；',
         'prefer —— 打开偏好模式：只调用指定模型，用尽时自动换渠道，所有渠道都不可用时暂停并提醒；',
         'unprefer —— 退出偏好模式，回到自动调度；',
         'refresh —— 重新拉取实时模型清单与渠道数据；',
@@ -72,6 +72,8 @@ export function registerAgentSurface(options) {
           reasoningEffort: { type: 'string', description: 'set：auto | preserve | 具体 effort id（max/high/...）。' },
           routeFirstTurn: { type: 'boolean', description: 'set：新会话第一条消息是否直接按调度结果调用模型（true，默认）；false 时首轮先用选择器里的模型。' },
           autoSelect: { type: 'boolean', description: 'set：自动选择——模型全部由调度决定，官方模型选择器只作展示（true）；false 时选择器的改动会被尊重一段时间。' },
+          sameKindEscalation: { type: 'boolean', description: 'set：同一条路线同类失败连败时逐级延长冷却（默认 true）。关掉则每次都只用基础冷却。' },
+          staleLatencyMode: { type: 'string', enum: ['penalize', 'neutral'], description: 'set：过期但真实的延迟读数怎么算——penalize（默认）仍参与打分，neutral 当作未知。' },
           turnTokenBudget: { type: 'number', description: 'set：单轮输出 token 预算，超出后自动切到省 token 档；0 关闭。' },
           deny: { type: 'array', items: { type: 'string' }, description: 'set：永不动用的模型（id 或 provider/model）。' },
           allow: { type: 'array', items: { type: 'string' }, description: 'set：即使在内置黑名单里也允许动用。' },
@@ -107,7 +109,7 @@ export function registerAgentSurface(options) {
             const patch = {}
             for (const key of ['mode', 'strategy', 'preferModel', 'preferProvider', 'preferFallback',
               'turnTokenBudget', 'deny', 'allow', 'denyProviders', 'reasoningEffort', 'routeFirstTurn', 'autoSelect',
-              'peerShare']) {
+              'sameKindEscalation', 'staleLatencyMode', 'peerShare']) {
               if (args?.[key] !== undefined) patch[key] = args[key]
             }
             if (Object.keys(patch).length === 0) return { ok: false, error: 'set 需要至少一个要修改的字段' }

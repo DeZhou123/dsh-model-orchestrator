@@ -15,7 +15,7 @@
 
 import path from 'node:path'
 import fs from 'node:fs'
-import { COOLDOWN, FAILURE_BURST, REQUEST_REPEAT, STRIKE_HALF_LIFE_MS, TOKEN_WINDOWS } from './policy-defaults.js'
+import { COOLDOWN, ESCALATION, FAILURE_BURST, REQUEST_REPEAT, STRIKE_HALF_LIFE_MS, TOKEN_WINDOWS } from './policy-defaults.js'
 import { writeJsonAtomic } from './dataset.js'
 
 /** Failure kinds the router reasons about. */
@@ -37,6 +37,16 @@ export const KIND = {
    * verdict cools this model on this channel and leaves siblings alone.
    */
   SAFETY: 'safety',
+  /**
+   * 订阅/套餐不可用（LOCAL PATCH 2026-11-14）。
+   *
+   * 与 QUOTA 分开，因为处置与话术都不同：额度耗尽会自己回来（存到本地午夜），
+   * 套餐/订阅问题要人去开通。旧的分类器两者都不认识，于是三天里让
+   * qoder/qodercn（`{"pricingUrl":…} (112/model_error)`）与 cline
+   * （`Error 403: the user is not subscribed to required model plan`）
+   * 合计重试了 55 次，每次都只吃 30 秒的瞬时冷却，下一轮再撞同一堵墙。
+   */
+  PLAN: 'plan',
   UNAVAILABLE: 'unavailable',
   CONTEXT: 'context',
   TRANSIENT: 'transient',
@@ -46,7 +56,7 @@ export const KIND = {
 }
 
 /** Failure kinds that mean "this lane cannot serve anything right now". */
-const LANE_WIDE = new Set([KIND.QUOTA, KIND.REGION, KIND.AUTH, KIND.UNAVAILABLE])
+const LANE_WIDE = new Set([KIND.QUOTA, KIND.PLAN, KIND.REGION, KIND.AUTH, KIND.UNAVAILABLE])
 
 /**
  * Reason prefix that marks a verdict demoted from lane scope to model scope.
@@ -197,6 +207,27 @@ const NETWORK_CONNECT_CODES = new Set([
   'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'EPROTO', 'UND_ERR_SOCKET',
 ])
 const AUTH_TEXT = /unauthor|invalid api key|invalid credential|sign in|登录|凭据/i
+/**
+ * 「没登录」和「登录过期」是两种东西（LOCAL PATCH 2026-11-14）。
+ *
+ * 前者等多久都不会好——实测 2026-11-13：workbuddy 车道被判 auth、停 30 分钟，
+ * 到期立刻被重新选中，然后在第一步就以 `未配置凭据，请先登录` 结束整轮
+ * （`turn/end kind:error` 两次）。一个没人去点的登录框，冷却 30 分钟与冷却 12 小时
+ * 的唯一区别就是"多久报一次同样的错"。
+ *
+ * 所以这一类单独认出来，按 {@link COOLDOWN.credential} 长停车，并在 reason 里
+ * 说清楚要做什么。成功调用（用户登录后）会照常清账。
+ */
+const CREDENTIAL_MISSING_TEXT = /未配置凭据|未登录|请先登录|没有配置凭据|not (?:signed|logged) in|please (?:sign|log) in|no credentials? (?:configured|found|set)|missing (?:api key|credential)|api key (?:is )?missing|credentials? not configured/i
+/**
+ * 订阅/套餐不可用（LOCAL PATCH 2026-11-14）。见 {@link KIND.PLAN}。
+ *
+ * 分开两条是因为 qoder 的报错**没有任何一个 plan 词**：它只回一个
+ * `{"pricingUrl":…} (112/model_error)`，指路到定价页；而 cline 是标准 403 +
+ * "not subscribed to required model plan"。两条都要认出来。
+ */
+const PLAN_TEXT = /not subscribed|subscription (?:required|needed|expired|not active)|requires? (?:a )?(?:paid|pro|premium|team|enterprise) (?:plan|subscription)|pricingUrl|套餐|订阅|试用到期|续费/i
+const PLAN_CODE_TEXT = /\(112\/model_error\)|"code"\s*:\s*112\b/i
 const CONTEXT_TEXT = /context (window|length)|too many tokens|maximum context|上下文/i
 /**
  * A channel's own content/safety review (LOCAL PATCH 2026-10-18).
@@ -341,11 +372,36 @@ export function classifyFailure(failure, context = {}) {
     const connectivity = connectCode || NETWORK_CONNECT_TEXT.test(detail)
     return {
       kind: KIND.TRANSIENT,
-      cooldownMs: Math.min(COOLDOWN.transient * 1.5 ** strikes, COOLDOWN.rateMax),
+      cooldownMs: Math.min(COOLDOWN.transient * 1.5 ** strikes, COOLDOWN.transientMax),
       scope: 'model',
       connectivity,
       reason: '线路问题（非凭据）：' + (message === '' ? code : message.slice(0, 200)),
       retryable: true,
+    }
+  }
+
+  // ── 订阅/套餐：不是额度、不是凭据，是「这个模型你没买」（LOCAL PATCH 2026-11-14）──
+  // 放在 AUTH 之前：cline 的 `Error 403: the user is not subscribed…` 带着 403，
+  // 而 403 那条分支会把它判成凭据问题（30 分钟冷却 + 升级），处置反而更松。
+  if (PLAN_CODE_TEXT.test(detail) || byText(PLAN_TEXT) || /not subscribed/i.test(detail)) {
+    return {
+      kind: KIND.PLAN,
+      cooldownMs: COOLDOWN.plan,
+      scope: 'lane',
+      reason: '需要订阅/套餐不可用：' + (message === '' ? code : message.slice(0, 160)),
+      retryable: false,
+    }
+  }
+
+  // ── 「没登录」先于「凭据失效」：处置时间差 24 倍（LOCAL PATCH 2026-11-14）─────
+  if (CREDENTIAL_MISSING_TEXT.test(detail)) {
+    return {
+      kind: KIND.AUTH,
+      cooldownMs: COOLDOWN.credential,
+      scope: 'lane',
+      credentialMissing: true,
+      reason: '该渠道未配置凭据（登录后才会恢复）：' + (message === '' ? code : message.slice(0, 160)),
+      retryable: false,
     }
   }
 
@@ -378,7 +434,7 @@ export function classifyFailure(failure, context = {}) {
     const kind = strikes >= 1 ? KIND.SLOW : KIND.TRANSIENT
     return {
       kind,
-      cooldownMs: Math.min(COOLDOWN.transient * 2 ** strikes, COOLDOWN.rateMax),
+      cooldownMs: Math.min(COOLDOWN.transient * 2 ** strikes, COOLDOWN.transientMax),
       scope: 'model',
       reason: message === '' ? '请求超时' : message.slice(0, 200),
       retryable: true,
@@ -388,7 +444,7 @@ export function classifyFailure(failure, context = {}) {
   if (code === 'SERVER' || code === 'TRANSPORT' || byText(SERVER_TEXT)) {
     return {
       kind: KIND.TRANSIENT,
-      cooldownMs: Math.min(COOLDOWN.transient * 2 ** strikes, COOLDOWN.rateMax),
+      cooldownMs: Math.min(COOLDOWN.transient * 2 ** strikes, COOLDOWN.transientMax),
       scope: 'model',
       reason: message === '' ? '上游故障' : message.slice(0, 200),
       retryable: true,
@@ -693,6 +749,46 @@ export function createHealth(options = {}) {
     }
   }
 
+  /**
+   * 同类连败的冷却上限（每类各不相同）。
+   *
+   * 上限必须存在：一条**永久**不通的车道（域名没了、套餐没买）不该被升级成
+   * 「永远不选」——那只能靠 probe 或用户的显式操作发现它回来了，而账本没有那条通路。
+   * 所以升级到上限即停，剩下的交给衰减与成功调用清账。
+   */
+  function cooldownCapFor(kind) {
+    if (kind === KIND.AUTH || kind === KIND.SAFETY) return Math.max(COOLDOWN.auth, COOLDOWN.authMax)
+    if (kind === KIND.PLAN) return Math.max(COOLDOWN.plan, COOLDOWN.authMax)
+    if (kind === KIND.QUOTA) return 24 * 60 * 60_000
+    if (kind === KIND.REGION) return COOLDOWN.region
+    if (kind === KIND.UNAVAILABLE) return COOLDOWN.unavailable
+    if (kind === KIND.RATE) return COOLDOWN.rateMax
+    return COOLDOWN.transientMax
+  }
+
+  /**
+   * 同一条路线上「同一种病」连着犯时的冷却升级（LOCAL PATCH 2026-11-14）。
+   *
+   * 与 FAILURE_BURST 的去重刻意分开：去重管的是「同一件事被报了两次」（5 秒窗口，
+   * 不延长冷却），升级管的是「同一件事一次又一次发生」（30 分钟窗口，按倍数延长）。
+   *
+   * 为什么必须有：各类冷却都是常数，而 strikes 按 3 小时半衰期衰减——一条每半小时
+   * 失败一次的车道，每次失败时衰减后的 strikes 都贴近 0，于是它的冷却永远停在初始值，
+   * 永远在同一个节奏上回锅。日志里这就是 trae/qoder 的 transport failed 被选中 48/39 次。
+   */
+  function escalateCooldown(record, verdict, now) {
+    const base = Math.max(0, Number(verdict.cooldownMs ?? 0))
+    const previous = String(record.sameKind ?? '')
+    const previousAt = Number(record.sameKindAt ?? 0)
+    const run = previous === verdict.kind && previousAt > 0 && now - previousAt <= ESCALATION.windowMs
+      ? Number(record.sameKindRun ?? 1) + 1
+      : 1
+    const enabled = requestPolicy().sameKindEscalation !== false
+    if (!enabled || base <= 0 || run < ESCALATION.minRun) return { cooldownMs: base, run }
+    const factor = Math.min(ESCALATION.maxFactor, ESCALATION.factor ** Math.min(run - 1, 8))
+    return { cooldownMs: Math.min(cooldownCapFor(verdict.kind), base * factor), run }
+  }
+
   /** Apply one failure to the ledger and return the verdict. */
   function markFailure(provider, model, failure, meta = {}) {
     const now = clock()
@@ -776,6 +872,10 @@ export function createHealth(options = {}) {
     record.status = verdict.kind
     record.reason = verdict.reason
 
+    // What the caller is told to wait. Set by the escalation branch below; on a
+    // burst the ledger keeps the deadline it already booked (see the comment).
+    let effectiveCooldownMs = Math.max(0, Number(verdict.cooldownMs ?? 0))
+
     if (burst) {
       // Same event, reported twice. Neither the strike nor the deadline may
       // move: the classifier derives its backoff from the strike count, so a
@@ -784,10 +884,20 @@ export function createHealth(options = {}) {
       // report of one wall). The first verdict already booked the deadline, and
       // a live cooldown must never be shortened by a later, milder report
       // either — so it is simply left alone.
+      effectiveCooldownMs = Math.max(0, Number(record.until ?? 0) - now)
     } else {
       record.strikes += 1
       record.strikesAt = now
-      record.until = verdict.cooldownMs > 0 ? now + verdict.cooldownMs : 0
+      // 同类连败升级（见 escalateCooldown）。记录写在 model 记录上，因为它是
+      // 「这条路线上的这个病」的证据；车道级停车由下面那一段用同一个 until 兜住。
+      const escalated = escalateCooldown(record, verdict, now)
+      record.sameKind = verdict.kind
+      record.sameKindRun = escalated.run
+      record.sameKindAt = now
+      record.lastCooldownMs = escalated.cooldownMs
+      record.sameKindEscalated = escalated.cooldownMs > Math.max(0, Number(verdict.cooldownMs ?? 0))
+      record.until = escalated.cooldownMs > 0 ? now + escalated.cooldownMs : 0
+      effectiveCooldownMs = Math.max(0, record.until - now)
     }
 
     const bucket = bucketFor(provider, model)
@@ -812,12 +922,10 @@ export function createHealth(options = {}) {
     }
 
     dirty = true
-    // The returned cooldown must be the one that is actually in effect. On a
-    // burst report the classifier's fresh backoff (derived from the now-higher
-    // strike count) is a number nobody is waiting for; reporting it would tell
-    // the caller to wait longer than the ledger does.
-    const effectiveCooldown = burst ? Math.max(0, Number(record.until ?? 0) - now) : verdict.cooldownMs
-    return { ...verdict, cooldownMs: effectiveCooldown, burst, lane: String(provider), model: String(model), ...meta }
+    // The returned cooldown must be the one that is actually in effect — after
+    // escalation, and (on a burst report) the deadline the ledger already holds,
+    // not the fresh backoff derived from the now-higher strike count.
+    return { ...verdict, cooldownMs: effectiveCooldownMs, burst, lane: String(provider), model: String(model), ...meta }
   }
 
   /** Record one successful call: latency, throughput, tokens, and recovery. */
@@ -840,6 +948,11 @@ export function createHealth(options = {}) {
     // earn its own strike (see markFailure's burst deduplication).
     record.lastKind = ''
     record.lastKindAt = 0
+    // 也结束同类连败：下一次失败重新从基础冷却算起（否则一条车道会永远背着
+    // 上次的升级倍数，成功一次也翻不了身）。
+    record.sameKind = ''
+    record.sameKindRun = 0
+    record.sameKindAt = 0
     // A success forgives part of the decayed history rather than one whole
     // strike: with a half-life in play, "minus one" is meaningless at 0.3.
     decayStrikes(record, now)

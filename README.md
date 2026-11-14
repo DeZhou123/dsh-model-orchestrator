@@ -401,6 +401,95 @@ x0.06 与 x2.0 车道的效用差只有 0.137，而换道要付 0.35，净差 **
 批量：`--batch _fp/batch-a.json`。原始证据 `_fp/*-raw.ndjson`，请求账目与阻塞清单见
 `_fingerprint-report.md`。
 
+## 失败分类、连败升级与偏好冲突（2026-11-14，v2.9.0）
+
+这一版全部来自 2026-11-12～11-14 的实盘日志（76 个会话、262 次模型重试、3 次整轮以错误结束）。
+四类问题都满足同一个形式：**账本里记着的信息，决策时没有用上**。
+
+### 1. 「没登录」不是 30 分钟的故障，是配置状态（12 小时停车）
+
+现场：workbuddy 车道被判 `auth`、停 30 分钟；到期立刻被重新选中，然后**第一步就以
+`未配置凭据，请先登录` 结束整轮**（`turn/end kind:error`，三天内 2 次）。
+等 30 分钟不会让任何人去点那个登录框，它只会让同一个错误每小时重演一次。
+
+新判决：message 命中「未配置凭据 / 请先登录 / not configured / please log in」时按
+`COOLDOWN.credential`（12 小时）停车，并在 reason 里写清楚要做什么。真凭据失效
+（`invalid api key`、401）不受影响，仍是 30 分钟 + 连败升级。
+
+### 2. 订阅/套餐型失败有了自己的判决（`KIND.PLAN`，6 小时）
+
+三种文案以前全都掉进 30 秒的 transient 默认分支，于是每一轮都在撞同一堵墙：
+
+| 渠道 | 原文 | 旧判决 | 新判决 |
+| --- | --- | --- | --- |
+| qoder / qodercn | `{"pricingUrl":"…"} (112/model_error)` | transient 30s | `plan` 6h |
+| cline | `Error 403: the user is not subscribed to required model plan` | auth 30min（凭据是好的！） | `plan` 6h |
+
+三天内这两类合计重试 55 次。面板状态与 `/route` 都直接写「需订阅/套餐」。
+
+### 3. 同一条线连着犯同一种病，冷却逐级升级
+
+各类冷却原本都是常数（auth 固定 30 分钟、transient 封顶 5 分钟），而 strikes 按 3 小时半衰期
+衰减——**每半小时失败一次的车道，每次失败时衰减后的 strikes 都贴近 0**，冷却永远停在初始值。
+日志里 trae/qoder 的 `transport error: fetch failed` 分别被选中 48/39 次，就是这么来的。
+
+现在：同一条路线、同一种判决、30 分钟内再次出现 → 冷却 ×2，最多 ×8，并按判决类型封顶
+（transient 30 分钟、auth 6 小时、quota 到本地午夜、plan 6 小时）。**一次成功调用即清零**，
+生病过的车道可以自己翻身。关掉：`sameKindEscalation=false`。
+
+### 4. 陈旧但真实的延迟读数不再被当成「未知」
+
+our-free-model 的 `deepseek-ai/deepseek-v4.1-flash` 实测首字 **304 秒**（免费池排队），
+但这条读数超过 2 小时后被判过期，掉进 `source: 'none'` 拿到中性的速度分 0.5 ——
+"我们不知道它多慢"与"我们知道它慢得不能用"被当成了同一件事。同期
+`upstream stream idle past its deadline` 出现 14 次。
+
+现在过期读数仍参与打分（`source: 'stale'`）；一次成功调用刷新 EWMA 即回到 `live`。
+想回到旧行为：`staleLatencyMode=neutral`。
+
+### 5. 偏好模式与用户自己的 deny 列表冲突时会点名
+
+2026-11-13 的事故：偏好模型 deepseek-v4.1-flash 被判「全灭」，用户改用自动模式；
+而他**手动**选同一条 OFM 免费 flash 车道时能用——因为手动选择不经过 deny。
+真正的差别是那两条健康车道写在用户自己的 `deny` 里：
+
+```
+deny: ["workbuddy/deepseek-v4.1-flash-sg",
+       "our-free-model/opencode/deepseek-v4.1-flash-free",
+       "our-free-model/deepseek-v4.1-flash-free"]
+```
+
+被 deny 挡住的渠道**不会随时间恢复**，而旧文案把它们和"冷却中"混成同一句
+「全部 16 条渠道不可用」。现在：
+
+- `status` / 面板的 `preference.group.conflicts` 列出被 deny 挡住的每一条及其 deny 原文；
+- 暂停通知改口径：「可用渠道已用尽，但其中 2 条是被你自己的屏蔽列表挡住的（…），
+  删除对应 deny 项可立即恢复」；
+- `explainExhausted` 在 reason 里带上同样的下一步。
+
+### 6. 同一家族在一个 step 里只烧一次换道预算
+
+偏好家族 `deepseek-v4.1-flash` 挂 16 条同名车道，事故当时其中 13 条不可用
+（2 条被策略排除、2 条未登录、4 条未订阅、1 条额度到中午、1 条被用户屏蔽、1 条安全拦截）。
+失败恢复的既有规则是"先在同一家族换个渠道"，于是 **3 次 `maxSwitchesPerStep` 全花在同一个
+家族的兄弟车道上**，整轮以最后一个错误结束，连"换一个模型"都没走到。
+
+现在：同一家族在同一个 step 内失败两次后，`recover()` 把它放进 `excludeFamilies`，
+本步骤改试其它家族；**只有当过滤后还有别的家族可用时才生效**（全灭时自动让路，见
+`evaluate` 的 survivor 守卫）。偏好模式下这只降级**本次请求**，偏好本身不退出。
+
+### 新增/可调的配置
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `sameKindEscalation` | `true` | 同类连败时逐级延长冷却 |
+| `staleLatencyMode` | `'penalize'` | 过期延迟读数仍参与打分（`neutral` = 旧行为） |
+
+### 回归用例
+
+`node tools/smoke.mjs` 的 `[15] 2026-11-14 事故回归` 一节逐条锁住上面六件事
+（含"真 401 不被「没登录」吞掉""升级有上限""一次成功即清零""候选全被停车时守卫生效"）。
+
 ## 数据从哪来（以及为什么更准）
 
 | 数据 | 来源 | 用法 |

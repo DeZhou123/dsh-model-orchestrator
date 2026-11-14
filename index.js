@@ -40,7 +40,7 @@ import { createPeerAdapter } from './src/peershare-adapter.js'
 import { createObserver } from './src/observe.js'
 import { createInflight } from './src/inflight.js'
 import {
-  evaluate, rankGroups, rankLanes, readNeeds, resolvePreferenceGroup, selectRoute,
+  evaluate, preferenceConflicts, rankGroups, rankLanes, readNeeds, resolvePreferenceGroup, selectRoute,
 } from './src/router.js'
 import { DEFAULT_CONFIG } from './src/policy-defaults.js'
 import { foldKey } from './src/families.js'
@@ -55,7 +55,7 @@ export const name = 'model-orchestrator'
 /** `llm` is what the plugin exists for. The rest degrades feature by feature. */
 export const inject = ['llm']
 
-export const version = '2.8.0'
+export const version = '2.9.0'
 
 /**
  * 这条 provider 是不是「借来的聚合车道」。
@@ -1150,9 +1150,18 @@ export function apply(ctx, rawConfig = {}) {
         }, runtime.config.decisionLogSize)
         ctx.logger?.warn?.('model-orchestrator: 偏好模型不可用 — ' + decision.exhausted.reason)
         if (runtime.config.preferNotify !== false) {
-          notify('偏好模式已暂停',
-            '偏好模型 ' + decision.exhausted.model + ' 的所有渠道都不可用。' + decision.exhausted.reason
-            + ' 已临时改用' + fallbackName(decision.mode) + '模式。')
+          // 措辞分两种（LOCAL PATCH 2026-11-14）：被自己的 deny 挡住时，
+          // "所有渠道都不可用"是**假话**——那几条车道是好的，只是用户自己关了它们。
+          // 通知里必须给出可执行的下一步，否则用户只会以为插件坏了。
+          const conflicts = Array.isArray(decision.exhausted.conflicts) ? decision.exhausted.conflicts : []
+          const body = conflicts.length === 0
+            ? '偏好模型 ' + decision.exhausted.model + ' 的可用渠道已用尽。' + decision.exhausted.reason
+              + ' 已临时改用' + fallbackName(decision.mode) + '模式。'
+            : '偏好模型 ' + decision.exhausted.model + ' 的可用渠道已用尽，但其中 ' + conflicts.length
+              + ' 条是被你自己的屏蔽列表挡住的：' + conflicts.map(entry => entry.denyEntry).join('、')
+              + '。删除对应 deny 项可立即恢复（它们不会随时间自愈）。已临时改用'
+              + fallbackName(decision.mode) + '模式。'
+          notify('偏好模式已暂停', body)
         }
       }
       return
@@ -1381,6 +1390,25 @@ export function apply(ctx, rawConfig = {}) {
     }
 
     const anchor = withKey(route)
+    // 同一个家族在一个 step 里只允许重试一次（LOCAL PATCH 2026-11-14）。
+    //
+    // 事实：偏好家族 deepseek-v4.1-flash 现挂 16 条同名车道，其中 13 条可能同时不可用
+    // （2 条被策略排除、2 条未登录、4 条未订阅、1 条额度到中午、1 条被用户屏蔽、
+    // 1 条安全拦截）。旧代码每一次失败都"优先留在同一家族换个渠道"，于是三次
+    // maxSwitchesPerStep 全花在同一个家族的兄弟车道上，整轮以最后一个错误结束——
+    // 连"换一个模型"这一步都没走到。用户的观感就是"经常报错、经常停止"。
+    //
+    // 换渠道的初衷（保住 prompt 缓存、不换上下文）在小家族里依然成立，所以只限制次数，
+    // 不取消：第一次仍然留在同家族，第二次直接比较全体候选（含其它家族）。
+    const familyRetries = state.familyRetries instanceof Set ? state.familyRetries : (state.familyRetries = new Set())
+    const repeatFamily = !isContext && failedKey !== null && failedKey !== undefined && familyRetries.has(failedKey)
+    if (!isContext && failedKey !== null && failedKey !== undefined) familyRetries.add(failedKey)
+    // 第二次栽在同一个家族上，本 step 内就不再把它排进候选（router 只在"还有别的
+    // 家族可用"时才真的生效，见 evaluate 的 excludeFamilies）。
+    const parkedFamilies = state.stepFailedFamilies instanceof Set
+      ? state.stepFailedFamilies
+      : (state.stepFailedFamilies = new Set())
+    if (repeatFamily) parkedFamilies.add(failedKey)
     const input = {
       ...selectionInput(state),
       anchor,
@@ -1388,6 +1416,7 @@ export function apply(ctx, rawConfig = {}) {
       // Same model first, on a different channel. A context-window failure is
       // the one case where the same model cannot help.
       forceGroupKey: isContext ? null : failedKey,
+      excludeFamilies: parkedFamilies,
       exclude: new Set([route.provider + '\u0000' + route.model]),
       minContextWindow: isContext && Number.isFinite(failedRow?.contextWindow) ? failedRow.contextWindow : undefined,
     }
@@ -1427,6 +1456,8 @@ export function apply(ctx, rawConfig = {}) {
 
   function failureReason(verdict) {
     if (verdict.kind === KIND.QUOTA) return '额度耗尽'
+    if (verdict.kind === KIND.PLAN) return '订阅/套餐不可用'
+    if (verdict.kind === KIND.AUTH && verdict.credentialMissing === true) return '该渠道未配置凭据'
     if (verdict.kind === KIND.RATE) return '速率受限'
     if (verdict.kind === KIND.CONTEXT) return '上下文窗口不足'
     if (verdict.kind === KIND.REGION) return '地区封锁'
@@ -1458,6 +1489,8 @@ export function apply(ctx, rawConfig = {}) {
       state.priorFailures = 0
       state.stepSwitches = 0
       state.turnSwitches = 0
+      state.familyRetries = new Set()
+      state.stepFailedFamilies = new Set()
       return
     }
     if (event.type === 'turn/end') {
@@ -1469,6 +1502,9 @@ export function apply(ctx, rawConfig = {}) {
     if (event.type === 'step/start') {
       state.step = Number(event.data?.step ?? -1)
       state.stepSwitches = 0
+      // 同家族只在每个 step 里重试一次（LOCAL PATCH 2026-11-14，见 recover）。
+      state.familyRetries = new Set()
+      state.stepFailedFamilies = new Set()
       return
     }
     if (event.type === 'model/selection') {
@@ -1651,6 +1687,9 @@ export function apply(ctx, rawConfig = {}) {
             intel: match.intel,
             total: match.all.length,
             available: match.lanes.length,
+            // 被用户自己的 deny 挡住的渠道（不会随时间恢复）——面板与工具都要显示，
+            // 否则"偏好模式坏了"与"你自己把它屏蔽了"在界面上长得一模一样。
+            conflicts: preferenceConflicts(match),
             lanes: match.all.map(entry => ({
               provider: entry.row.provider,
               model: entry.row.model,

@@ -19,11 +19,14 @@ import { createDataset, familyFor, familyResolutionFor, familyInfo, reportLaneTt
 import { createHealth, KIND } from '../src/health.js'
 import { createCatalog, laneMultiplier, laneIsFree } from '../src/catalog.js'
 import { createChannelData, packDayKey } from '../src/channels.js'
-import { chooseEffort, evaluate, latencyFor, rankGroups, rankLanes, readNeeds, resolvePreferenceGroup, scoreLane, selectRoute } from '../src/router.js'
+import {
+  chooseEffort, DENY_REASON_PREFIX, evaluate, explainExhausted, latencyFor, preferenceConflicts,
+  rankGroups, rankLanes, readNeeds, resolvePreferenceGroup, scoreLane, selectRoute,
+} from '../src/router.js'
 import { resolveConfig, sanitizePatch } from '../src/config.js'
 import { createInflight } from '../src/inflight.js'
 import { datasetFromReport } from '../src/report-import.js'
-import { DEFAULT_CONFIG } from '../src/policy-defaults.js'
+import { COOLDOWN, DEFAULT_CONFIG, ESCALATION } from '../src/policy-defaults.js'
 import { foldCandidates, foldKey, NON_INTERACTIVE_SUFFIX } from '../src/families.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -475,6 +478,41 @@ console.log('\n[5] catalog decoration')
     && dsGroup.models.includes('opencode/deepseek-v4.1-flash')
     && dsGroup.total === 2,
     JSON.stringify([dsGroup?.models, dsGroup?.total]))
+
+  // ── 2026-11-13 事故的回归用例（LOCAL PATCH 2026-11-14）─────────────────────
+  //
+  // 现场：偏好模型 deepseek-v4.1-flash 被判定"全灭"，用户改用自动模式；
+  // 而他手动选同一车道（our-free-model 的免费 flash）时请求根本不经过 deny，
+  // 于是能用。真正的差别是：那两条健康车道写在用户自己的 deny 列表里。
+  // 这两条用例锁住两件事——(a) 前缀常量没漂移，(b) 冲突能被点名并给出下一步。
+  const deniedRow = denyLaneCatalog.row('buddy', 'sn-deepseek-v4-1-flash-1017')
+  checkThat('目录层给「用户屏蔽」写的就是 preferenceConflicts 认的前缀',
+    String(deniedRow?.deniedReason ?? '').startsWith(DENY_REASON_PREFIX),
+    String(deniedRow?.deniedReason))
+  const conflictEvaluation = evaluate({
+    rows: denyLaneCatalog.current.rows,
+    health: createHealth({ userDir: null, clock }),
+    config: resolveConfig({ deny: ['buddy/sn-deepseek-v4-1-flash-1017'] }, {}),
+    anchor: null,
+    needs: readNeeds({}, resolveConfig({}, {})),
+  })
+  const conflicted = resolvePreferenceGroup(conflictEvaluation.allGroups, 'deepseek-v4.1-flash', '')
+  const conflicts = preferenceConflicts(conflicted)
+  check('被自己的 deny 挡住的渠道能被点名', conflicts.map(entry => entry.denyEntry), ['buddy/sn-deepseek-v4-1-flash-1017'])
+  const allDenied = {
+    all: [
+      { row: { provider: 'our-free-model', model: 'deepseek-v4.1-flash-free', modelName: 'DeepSeek-V4.1-Flash' }, inspection: { eligible: false, reason: DENY_REASON_PREFIX + 'our-free-model/deepseek-v4.1-flash-free', until: 0 } },
+      { row: { provider: 'trae', model: 'deepseek-v4.1-flash', modelName: 'DeepSeek-V4.1-Flash' }, inspection: { eligible: false, reason: 'trae: quota', until: NOW + 600_000 } },
+    ],
+    lanes: [],
+  }
+  checkThat('耗尽说明点名了屏蔽项并给出下一步',
+    explainExhausted(allDenied, NOW).includes('our-free-model/deepseek-v4.1-flash-free')
+    && explainExhausted(allDenied, NOW).includes('删除对应 deny 项'),
+    explainExhausted(allDenied, NOW))
+  checkThat('没有屏蔽项时不出现这句多余的话',
+    !explainExhausted({ all: allDenied.all.slice(1), lanes: [] }, NOW).includes('屏蔽'),
+    explainExhausted({ all: allDenied.all.slice(1), lanes: [] }, NOW))
 }
 
 console.log('\n[6] two-level routing')
@@ -1017,6 +1055,134 @@ console.log('\n[17] 换道代价随目标车道价格缩放（额度被最贵车
     - scoreLane(priceyLane, cacheNeeds, 'economy', createHealth({ userDir: null, clock }), null, cfg, NOW, null).utility
   checkThat('便宜车道的重读惩罚缩到零头（<0.06）', cheapPenalty < 0.06)
   checkThat('基准价格车道的重读惩罚保持满额（0.35）', Math.abs(priceyPenalty - 0.35) < 0.01)
+}
+
+console.log('\n[15] 2026-11-14 事故回归：错误分类 / 连败升级 / 陈旧延迟 / 家族停车')
+{
+  // ── (a) 三类被旧分类器漏判成「瞬时故障」的失败 ──────────────────────────────
+  // 依据：近三天会话日志里 workbuddy「未配置凭据」结束整轮 2 次、qoder/cline 的
+  // 订阅类错误重试 55 次、trae/qoder 的 transport failed 48/39 次。
+  const classifier = createHealth({ userDir: null, clock })
+  const credential = classifier.classifyFailure({ code: 'UNKNOWN', message: '未配置凭据，请先登录' })
+  checkThat('未登录按长停车处理，而不是 30 分钟后回锅',
+    credential.kind === KIND.AUTH && credential.credentialMissing === true
+    && credential.cooldownMs >= COOLDOWN.credential,
+    credential.kind + ':' + Math.round(credential.cooldownMs / 3600_000) + 'h')
+  const planQoder = classifier.classifyFailure({
+    code: 'UNKNOWN',
+    message: 'qoder: {"pricingUrl":"https://qoder.com/pricing?client=qoder"} (112/model_error)',
+  })
+  checkThat('qoder 的 112/model_error 认出是订阅问题',
+    planQoder.kind === KIND.PLAN && planQoder.scope === 'lane' && planQoder.cooldownMs >= COOLDOWN.plan,
+    planQoder.kind + ':' + Math.round(planQoder.cooldownMs / 3600_000) + 'h')
+  const planCline = classifier.classifyFailure({
+    code: 'UNKNOWN',
+    status: 403,
+    message: 'cline: Error 403: the user is not subscribed to required model plan',
+  })
+  checkThat('cline 的 403 未订阅不按凭据问题处理（凭据是好的，是套餐不在）', planCline.kind === KIND.PLAN, planCline.kind)
+  const staleKey = classifier.classifyFailure({ code: 'AUTH', status: 401, message: 'invalid api key' })
+  checkThat('真正的凭据失效仍然是凭据问题，没被「未登录」吞掉',
+    staleKey.kind === KIND.AUTH && staleKey.credentialMissing !== true && staleKey.cooldownMs < COOLDOWN.credential,
+    staleKey.kind + ':' + Math.round(staleKey.cooldownMs / 60_000) + 'min')
+
+  // ── (b) 同类连败升级 ──────────────────────────────────────────────────────
+  let tick = NOW
+  const escalating = createHealth({
+    userDir: null,
+    clock: () => tick,
+    requestPolicy: () => ({ sameKindEscalation: true }),
+  })
+  const failure = { code: 'TRANSPORT', message: 'trae: transport error: fetch failed' }
+  const first = escalating.markFailure('trae', 'glm-5.3', failure)
+  tick += 60_000
+  const second = escalating.markFailure('trae', 'glm-5.3', failure)
+  tick += 60_000
+  const third = escalating.markFailure('trae', 'glm-5.3', failure)
+  checkThat('同一条线连着犯同一种病时停得越来越久',
+    second.cooldownMs > first.cooldownMs && third.cooldownMs > second.cooldownMs,
+    [first, second, third].map(entry => Math.round(entry.cooldownMs / 1000) + 's').join(' -> '))
+  checkThat('升级有上限，不会变成永久停车',
+    third.cooldownMs <= COOLDOWN.transientMax, Math.round(third.cooldownMs / 1000) + 's')
+  escalating.markSuccess('trae', 'glm-5.3', { ttftMs: 900, inputTokens: 10, outputTokens: 5 })
+  tick += 60_000
+  const afterSuccess = escalating.markFailure('trae', 'glm-5.3', failure)
+  checkThat('一次成功就把连败升级清零（生病过的车道能翻身）',
+    afterSuccess.cooldownMs < third.cooldownMs,
+    Math.round(third.cooldownMs / 1000) + 's -> ' + Math.round(afterSuccess.cooldownMs / 1000) + 's')
+
+  let flatTick = NOW
+  const flat = createHealth({
+    userDir: null,
+    clock: () => flatTick,
+    requestPolicy: () => ({ sameKindEscalation: false }),
+  })
+  const flatFirst = flat.markFailure('trae', 'glm-5.3', failure)
+  flatTick += 60_000
+  const flatSecond = flat.markFailure('trae', 'glm-5.3', failure)
+  checkThat('关掉升级后只用基础冷却', flatSecond.cooldownMs < second.cooldownMs,
+    Math.round(flatSecond.cooldownMs / 1000) + 's < ' + Math.round(second.cooldownMs / 1000) + 's')
+
+  // ── (c) 陈旧但真实的延迟读数 ──────────────────────────────────────────────
+  const staleHealth = createHealth({ userDir: null, clock })
+  const slowLaneModel = { family: 'deepseek-v4.1-flash' }
+  staleHealth.markSuccess('our-free-model', 'deepseek-ai/deepseek-v4.1-flash', { ttftMs: 304_000, inputTokens: 5, outputTokens: 5 })
+  staleHealth.markSuccess('our-free-model', 'deepseek-ai/deepseek-v4.1-flash', { ttftMs: 304_000, inputTokens: 5, outputTokens: 5 })
+  const slowRow = lane('our-free-model', 'deepseek-ai/deepseek-v4.1-flash', slowLaneModel)
+  const freshReading = latencyFor(slowRow, staleHealth, NOW)
+  const oldReading = latencyFor(slowRow, staleHealth, NOW + 3 * 3600_000)
+  const neutralReading = latencyFor(slowRow, staleHealth, NOW + 3 * 3600_000, { staleLatencyMode: 'neutral' })
+  checkThat('两小时内的读数照旧是 live', freshReading.source === 'live' && freshReading.ms === 304_000,
+    freshReading.source + ':' + freshReading.ms)
+  checkThat('过期但真实的读数不再被当成「未知」', oldReading.source === 'stale' && oldReading.ms === 304_000,
+    oldReading.source + ':' + oldReading.ms)
+  checkThat('neutral 模式保留旧行为（当作未知）', neutralReading.source === 'none', neutralReading.source)
+  const slowConfig = resolveConfig({}, { strategy: 'quality' })
+  const slowNeeds = readNeeds({}, slowConfig)
+  const slowScore = scoreLane(slowRow, slowNeeds, 'quality', staleHealth, null, slowConfig, NOW + 3 * 3600_000, null)
+  const unknownScore = scoreLane(
+    lane('our-free-model', 'deepseek-ai/deepseek-v4.1-flash', slowLaneModel),
+    slowNeeds, 'quality', createHealth({ userDir: null, clock }), null, slowConfig, NOW + 3 * 3600_000, null)
+  checkThat('「实测很慢」比「没有数据」吃亏（中性分不再奖励没数据）',
+    slowScore.utility < unknownScore.utility,
+    slowScore.utility.toFixed(3) + ' < ' + unknownScore.utility.toFixed(3))
+
+  // ── (d) 同一家族在本步骤内连续失败后的停车 ────────────────────────────────
+  const rows = [
+    lane('buddy', 'glm-5.3', { quality: 0.95 }),
+    lane('trae', 'glm-5.3', { quality: 0.9, multiplier: 0.1, burn: 0.05 }),
+    lane('trae', 'mimo-v2.6-pro', { family: 'mimo-v2.6-pro', intel: 40, quality: 0.7, burn: 0.1 }),
+  ]
+  const parkConfig = resolveConfig({}, {})
+  const parkNeeds = readNeeds({}, parkConfig)
+  const parkHealth = createHealth({ userDir: null, clock })
+  const normal = selectRoute({ rows, health: parkHealth, config: parkConfig, anchor: null, needs: parkNeeds, mode: 'auto' })
+  check('正常情况下最优家族胜出', normal?.family, 'glm-5.3')
+  // 家族键是折过的（foldKey('glm-5.3') === 'glm-5-3'）——index.js 用 failedRow.key
+  // 或 foldKey(familyFor(model))，测试必须用同一套键，否则测的是空气。
+  const parked = selectRoute({
+    rows, health: parkHealth, config: parkConfig, anchor: null, needs: parkNeeds, mode: 'auto',
+    excludeFamilies: new Set([foldKey('glm-5.3')]),
+  })
+  check('同一家族连续失败后本步骤改试其它模型', parked?.family, 'mimo-v2.6-pro')
+  const everythingParked = selectRoute({
+    rows, health: parkHealth, config: parkConfig, anchor: null, needs: parkNeeds, mode: 'auto',
+    excludeFamilies: new Set([foldKey('glm-5.3'), foldKey('mimo-v2.6-pro')]),
+  })
+  checkThat('候选全被停车时这条规则自动让路（守卫生效，不会把整轮打死）',
+    everythingParked !== null && everythingParked.family === 'glm-5.3', String(everythingParked?.family))
+  const preferConfig = resolveConfig({}, { mode: 'prefer', preferModel: 'glm-5.3' })
+  const preferParked = selectRoute({
+    rows, health: parkHealth, config: preferConfig, anchor: null,
+    needs: readNeeds({}, preferConfig), mode: 'prefer',
+    preference: { model: 'glm-5.3', provider: '', fallback: 'auto' },
+    excludeFamilies: new Set([foldKey('glm-5.3')]),
+  })
+  checkThat('偏好家族被本步骤停车时只降级这一次，偏好模式本身不退出',
+    preferParked?.family === 'mimo-v2.6-pro'
+    && preferParked?.stepFallback !== undefined
+    && preferParked?.exhausted === undefined,
+    JSON.stringify([preferParked?.family ?? null, preferParked?.stepFallback?.reason ?? null]))
 }
 
 console.log('\n' + (failures === 0 ? 'PASS' : 'FAIL') + ' — ' + (checks - failures) + '/' + checks)
