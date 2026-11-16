@@ -56,7 +56,7 @@ export const name = 'model-orchestrator'
 /** `llm` is what the plugin exists for. The rest degrades feature by feature. */
 export const inject = ['llm']
 
-export const version = '2.12.0'
+export const version = '2.13.0'
 
 /**
  * 这条 provider 是不是「借来的聚合车道」。
@@ -673,7 +673,12 @@ export function apply(ctx, rawConfig = {}) {
     return catalog.refresh(reason)
       .then((current) => {
         lastCatalogAt = Date.now()
-        health.prune(catalog.providerIds)
+        // 把当前清单里的 (provider,model) 也交给账本：探活/扇出留下的幽灵记录必须能被回收，
+        // 否则 health.json 会随目录规模无限增长（见 src/health.js 的 prune）。
+        health.prune(
+          catalog.providerIds,
+          catalog.current.rows.map(row => row.provider + '\u0000' + row.model),
+        )
         return current
       })
       .catch(() => catalog.current)
@@ -1490,7 +1495,11 @@ export function apply(ctx, rawConfig = {}) {
     if (route === null) return next()
 
     const verdict = health.markFailure(route.provider, route.model, payload.failure)
-    health.persist()
+    // 这里**不再**同步落盘（FIX 2026-11-16）。旧代码每次失败都调 health.persist()，而它是
+    // 整本账（实测 611KB）的同步 JSON.stringify + 写文件，且绕过 15 秒节流：一个步骤最多会
+    // 在错误路径上做 7 次全量写（maxSwitchesPerStep 5 + 超额 2），全部发生在最需要及时响应的
+    // 那一刻。现在只标脏，交给节流定时器（persistIntervalMs）与卸载时的持久化。
+    // 代价：进程被硬杀会丢掉最后 ≤15 秒的冷却状态 —— 比拖慢失败恢复划算。
     // 这一轮里这条车道已经证明过自己不行了（LOCAL PATCH 2026-11-16）。
     //
     // 为什么必须记在会话里、而不能只靠冷却账本：冷却有长有短（瞬时 30 秒），

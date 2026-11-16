@@ -33,11 +33,18 @@ function readJson(file) {
   }
 }
 
-/** Write JSON atomically enough for a cache: temp file, then rename. */
-export function writeJsonAtomic(file, value) {
+/**
+ * Write JSON atomically enough for a cache: temp file, then rename.
+ *
+ * `pretty` 默认保留缩进（配置文件是给人看的、要能 git diff）。但**运行帐本**（health.json）
+ * 必须传 `pretty: false`：它每 15 秒可能整本重写一次，缩进能占掉一半体积（2026-11-16 实测
+ * 611KB 里约 250KB 是空白），而没有任何人会去读它的缩进。
+ */
+export function writeJsonAtomic(file, value, options = {}) {
   const temp = `${file}.${process.pid}.tmp`
   fs.mkdirSync(path.dirname(file), { recursive: true })
-  fs.writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
+  const pretty = options.pretty !== false
+  fs.writeFileSync(temp, (pretty ? JSON.stringify(value, null, 2) : JSON.stringify(value)) + '\n', 'utf8')
   fs.renameSync(temp, file)
 }
 

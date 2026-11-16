@@ -912,6 +912,11 @@ export function createHealth(options = {}) {
     const bucket = bucketFor(provider, model)
     bucket.errors += 1
 
+    // 车道级计数此前没有任何递增点（实测 15 条 lane 记录的 errors 全是 0，inTok/outTok 也全是 0），
+    // 面板的「渠道」页因此永远显示 0 —— 字段存在但语义为 0 比没有字段更坏（FIX 2026-11-16）。
+    lane.counters.errors += 1
+    lane.lastAt = now
+
     if (verdict.scope === 'lane') {
       lane.status = verdict.kind
       lane.reason = verdict.reason
@@ -991,6 +996,12 @@ export function createHealth(options = {}) {
     bucket.calls += 1
 
     lane.counters.calls += 1
+    lane.counters.inTok += Number.isFinite(input) ? input : 0
+    lane.counters.outTok += Number.isFinite(output) ? output : 0
+    if (Number.isFinite(observation.ttftMs) && observation.ttftMs > 0) {
+      lane.counters.ttftSum += observation.ttftMs
+      lane.counters.ttftN += 1
+    }
     lane.lastAt = now
     // 一次成功的调用就是「端点还活着」的证明：聚合车道的 endpointDown 必须就地清掉，
     // 否则对侧恢复之后本机仍在整片跳过借入车道（LOCAL PATCH 2026-11-04）。
@@ -1111,6 +1122,10 @@ export function createHealth(options = {}) {
         strikes: record.strikes,
         calls: record.counters.calls,
         errors: record.counters.errors,
+        // 车道级的真实累计 token（2026-11-16 起真正被写入；此前 markSuccess 只加 calls，
+        // 于是面板的渠道页永远显示 0）。与 windows 里的滚动窗口是两回事：这是全寿命。
+        tokens: { in: record.counters.inTok, out: record.counters.outTok },
+        ttftMs: record.counters.ttftN > 0 ? Math.round(record.counters.ttftSum / record.counters.ttftN) : null,
         windows: Object.fromEntries(TOKEN_WINDOWS.map(window => [window.id, laneSpend(record.provider, window.ms)])),
       })
     }
@@ -1127,7 +1142,7 @@ export function createHealth(options = {}) {
         models: [...models.values()],
         lanes: [...lanes.values()],
         buckets: Object.fromEntries([...buckets.entries()].map(([key, entry]) => [key, entry.hours])),
-      })
+      }, { pretty: false })
       dirty = false
       return true
     } catch {
@@ -1265,10 +1280,14 @@ export function createHealth(options = {}) {
    * @param {number} [now] - clock reading.
    * @param {number} [maxAgeMs] - how long a retired lane's history is kept.
    */
-  function prune(liveProviders, now = clock(), maxAgeMs = 24 * 60 * 60_000) {
+  function prune(liveProviders, liveKeys = null, now = clock(), maxAgeMs = 24 * 60 * 60_000) {
     const live = new Set(liveProviders)
+    const keys = liveKeys === null || liveKeys === undefined || liveKeys.length === 0
+      ? null
+      : new Set(liveKeys)
     for (const [key, record] of [...models.entries()]) {
       const provider = key.split('\u0000')[0]
+      const served = Number(record?.counters?.calls ?? 0) > 0
       if (!live.has(provider) && now - Number(record.lastAt ?? 0) > maxAgeMs) {
         models.delete(key)
         buckets.delete(key)
@@ -1276,6 +1295,61 @@ export function createHealth(options = {}) {
     }
     for (const [key, record] of [...lanes.entries()]) {
       if (!live.has(key) && now - Number(record.lastAt ?? 0) > maxAgeMs) lanes.delete(key)
+    }
+
+    // ── 幽灵记录清理（FIX 2026-11-16）────────────────────────────────────────
+    //
+    // 实测：health.json 611KB / 569 条 model 记录，其中 444 条**一次请求都没成功过**
+    // （cline 一家占 395 条）。来源是定时探活与车道级判决的扇出：探活会遍历目录里每一条
+    // provider×model（本机 751 条），失败一次就落一条永久记录；而旧的 prune 只在
+    // 「provider 从清单里消失」时才删，同在清单内的幽灵记录永不回收。
+    //
+    // 判据分三档，都只动「从未成功服务过」的记录（calls === 0）：
+    //   1. 清单里已经没有这个 id → 立刻清（探活留下的幽灵）；
+    //   2. 从未成功且超过 72 小时没有任何动静 → 清（覆盖一轮探活间隔 3 天）；
+    //   3. 仍然超量时按渠道与全局设上限，先清最旧的幽灵。
+    // 只要这条记录成功服务过一次（calls > 0），它就走上面那条「闲置 24 小时」的老规则 ——
+    // 真实流量的历史不能被这条清理顺手抹掉。
+    const ghostMaxAgeMs = 72 * 60 * 60_000
+    const drop = (key) => {
+      models.delete(key)
+      buckets.delete(key)
+    }
+    for (const [key, record] of [...models.entries()]) {
+      const provider = key.split('\u0000')[0]
+      if (Number(record?.counters?.calls ?? 0) > 0) continue
+      const lastAt = Number(record?.lastAt ?? 0)
+      if (keys !== null && !keys.has(key) && live.has(provider)) {
+        drop(key)
+        continue
+      }
+      if (now - lastAt > ghostMaxAgeMs) drop(key)
+    }
+
+    // 每渠道的幽灵上限：探活一轮可能给一个渠道写几百条，面板与落盘都不需要那么多。
+    const GHOSTS_PER_PROVIDER = 40
+    const MAX_MODEL_RECORDS = 400
+    const ghostsByProvider = new Map()
+    for (const [key, record] of models.entries()) {
+      if (Number(record?.counters?.calls ?? 0) > 0) continue
+      const provider = key.split('\u0000')[0]
+      const list = ghostsByProvider.get(provider) ?? []
+      list.push(key)
+      ghostsByProvider.set(provider, list)
+    }
+    for (const list of ghostsByProvider.values()) {
+      if (list.length <= GHOSTS_PER_PROVIDER) continue
+      list.sort((a, b) => Number(models.get(b)?.lastAt ?? 0) - Number(models.get(a)?.lastAt ?? 0))
+      for (const key of list.slice(GHOSTS_PER_PROVIDER)) drop(key)
+    }
+    if (models.size > MAX_MODEL_RECORDS) {
+      const spare = [...models.entries()]
+        .filter(([, record]) => Number(record?.counters?.calls ?? 0) === 0)
+        .sort((a, b) => Number(a[1]?.lastAt ?? 0) - Number(b[1]?.lastAt ?? 0))
+      for (const [key] of spare) {
+        if (models.size <= MAX_MODEL_RECORDS) break
+        drop(key)
+      }
     }
   }
 

@@ -1366,5 +1366,60 @@ console.log('\n[18] 2026-11-16 P0 批次回归：vision 回退不复活被掩码
   check('地板是 5 秒：4 秒年龄仍在窗口内', floored.of('buddy', 'glm-5.3'), 1)
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('\n[19] 2026-11-16 批 2 回归：车道计数不再恒为 0 / 幽灵记录可回收 / 落盘紧凑')
+
+{
+  // ── 19.1 车道级计数（此前是死字段：errors/inTok/outTok 没有任何递增点）──
+  let now = NOW
+  const ledger = createHealth({ userDir: null, clock: () => now })
+  ledger.markFailure('buddy', 'glm-5.3', { code: 'QUOTA_EXCEEDED', message: '额度已用尽' })
+  ledger.markSuccess('buddy', 'glm-5.3', { ttftMs: 1200, inputTokens: 500, outputTokens: 60 })
+  const laneRow = ledger.snapshot().lanes.find(row => row.provider === 'buddy')
+  checkThat('车道级失败计数不再恒为 0', Number(laneRow?.errors ?? 0) >= 1, String(laneRow?.errors))
+  check('车道级成功计数累加', laneRow?.calls, 1)
+  check('车道级 token 随成功调用累加', laneRow?.tokens, { in: 500, out: 60 })
+  check('车道级首字均值可读', laneRow?.ttftMs, 1200)
+
+  // ── 19.2 幽灵记录回收（探活/扇出留下的 calls===0 记录）──
+  const ghost = createHealth({ userDir: null, clock: () => now })
+  for (const model of ['g1', 'g2', 'g3', 'g4', 'g5']) {
+    ghost.markFailure('cline', model, { code: 'RATE_LIMIT', status: 429, message: 'Too many requests' })
+  }
+  ghost.markSuccess('cline', 'served', { ttftMs: 900, inputTokens: 10, outputTokens: 5 })
+  check('六条记录都在账上（前置条件）', ghost.snapshot().models.length, 6)
+  ghost.prune(
+    ['cline'],
+    ['cline\u0000g1', 'cline\u0000g2'],
+    now,
+  )
+  check('清单外的幽灵被清掉、清单内的留下、服务过的留下',
+    ghost.snapshot().models.map(row => row.model).sort(), ['g1', 'g2', 'served'])
+  // 从未成功过且超过 72 小时没动静的记录：即使还在清单里也要清
+  now += 73 * 60 * 60_000
+  ghost.prune(['cline'], ['cline\u0000g1', 'cline\u0000g2', 'cline\u0000served'], now)
+  checkThat('陈旧幽灵被清掉，服务过的记录保留',
+    ghost.snapshot().models.filter(row => row.model !== 'served').length === 0,
+    JSON.stringify(ghost.snapshot().models.map(row => row.model)))
+
+  // ── 19.3 上限：每渠道幽灵 ≤ 40，全局 ≤ 400 ──
+  const capped = createHealth({ userDir: null, clock: () => now })
+  for (let index = 0; index < 60; index += 1) {
+    capped.markFailure('cline', 'ghost-' + index, { code: 'RATE_LIMIT', status: 429, message: 'Too many requests' })
+  }
+  capped.prune(['cline'], null, now)
+  const ghostsPerLane = capped.snapshot().models.length
+  checkThat('单渠道幽灵记录被压到 40 条以内', ghostsPerLane <= 40, String(ghostsPerLane))
+
+  // ── 19.4 落盘紧凑：账本不带缩进（体积的一半是空白）──
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mo-health-'))
+  const compact = createHealth({ userDir: dir, clock: () => now })
+  compact.markFailure('buddy', 'glm-5.3', { code: 'TRANSPORT', message: 'fetch failed' })
+  compact.persist()
+  const raw = fs.readFileSync(path.join(dir, 'health.json'), 'utf8')
+  checkThat('账本落盘是紧凑 JSON（没有两空格缩进换行）',
+    !/\n\s{2}/.test(raw) && raw.trim().length > 0, '字节 ' + raw.length)
+}
 console.log('\n' + (failures === 0 ? 'PASS' : 'FAIL') + ' — ' + (checks - failures) + '/' + checks)
 if (failures > 0) process.exitCode = 1
