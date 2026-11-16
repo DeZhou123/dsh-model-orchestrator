@@ -92,6 +92,29 @@ export const STRATEGIES = {
 }
 
 /** Cooldowns, in milliseconds. `quota` resets at the next local midnight. */
+/**
+ * 故障域（连接层）短路（FIX 2026-11-16）。
+ *
+ * 连接层失败（ECONNRESET / ECONNREFUSED / getaddrinfo / TLS 握手）不是在说「这个模型不行」，
+ * 而是在说「这个端点到不了」。旧实现把它当成每条车道各自的瞬时冷却，于是路由会在**同一个
+ * 死端点**上换着模型反复撞：实测 2026-11-16 一次评审会话里 45 秒内出现 6 次
+ * `switch-budget-exhausted`，每次 reason 都是同一个 cline ECONNRESET —— 8 次换道预算全部
+ * 花在同一个线路上，整轮以错误收场。
+ *
+ * 现在的规则：同一渠道在窗口内连续 N 次连接层失败 ⇒ 判定「整域不通」，该渠道的**全部模型**
+ * 一起退出候选；并且这类换道**不消耗**步骤/回合换道预算（改用按回合的独立配额，
+ * 免得真断网时无限循环）。
+ */
+export const CONNECTIVITY = {
+  /** 同一渠道窗口内连续多少次连接层失败才算整域不通。 */
+  strikes: 3,
+  windowMs: 60_000,
+  /** 整域短路时长：短、可自愈（一次成功调用或清单刷新会解除）。 */
+  cooldownMs: 60_000,
+  /** 每个回合允许多少次「不扣预算」的连接类换道。 */
+  freeSwitchesPerTurn: 4,
+}
+
 export const COOLDOWN = {
   rate: 20_000,
   rateMax: 5 * 60_000,

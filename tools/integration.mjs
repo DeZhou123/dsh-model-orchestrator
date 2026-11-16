@@ -604,6 +604,73 @@ console.log('\n[12] 失败恢复：死车道不再被选回 / 回合中断自动
     resumed[0]?.source?.kind === 'model-orchestrator-resume', String(resumed[0]?.source?.kind))
 }
 
+
+console.log('\n[12b] 故障域短路：连接层失败不消耗换道预算（2026-11-16，v2.14.0）')
+{
+  await tools.get('model_orchestrator').execute({ action: 'set', mode: 'auto' })
+  const domainSession = createSession('s-domain', undefined)
+  const domainAgent = {
+    id: 's-domain',
+    session: domainSession,
+    status: 'idle',
+    followup() {},
+  }
+  const domainRef = makeSelection('trae', 'mimo-v2.6-pro')
+  sessions.set('s-domain', { ref: domainRef, session: domainSession })
+  fire('agent/created', { agent: domainAgent })
+  domainSession.append('turn/start', { turn: 1 })
+  domainSession.append('step/start', { turn: 1, step: 1 })
+  await fire('system-prompt/assemble', { variables: {} }, { agent: domainAgent }, () => Promise.resolve({ variables: {} }))
+
+  // 前面的 [12] 把 trae 的车道停进了额度冷却；先各发一次成功流把账本清干净，
+  // 否则这一段测的会是「候选全在冷却」，而不是故障域短路。
+  for (const model of ['glm-5.3', 'mimo-v2.6-pro']) {
+    const stream = fire('llm/stream', {
+      provider: 'trae',
+      model,
+      sessionId: 's-domain',
+      messages: [],
+    }, () => (async function* () {
+      yield { type: 'text-delta', text: 'ok' }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    })())
+    for await (const _chunk of stream) { /* drain */ }
+  }
+  const netFail = () => ({ code: 'ECONNRESET', message: 'fetch failed: socket hang up' })
+  // 形状照抄实测事故：**同一条线路**上换着模型连撞三次（trae 只有两个模型，
+  // 所以第三次回到第一个）。判据是渠道级，因此这三次必然累计到一次整域短路。
+  const attempts = [
+    { provider: 'trae', model: 'glm-5.3' },
+    { provider: 'trae', model: 'mimo-v2.6-pro' },
+    { provider: 'trae', model: 'glm-5.3' },
+  ]
+  const decisions = []
+  for (const attempt of attempts) {
+    // failedRoute 的判据是「header/applied 里那条真正发出去的路线」，显式设 header
+    // 让这一段只测故障域判据，不测 assemble 的副作用。
+    domainSession.setHeader({ provider: attempt.provider, model: attempt.model })
+    const action = await fire('agent/request-error', {
+      agent: domainAgent,
+      provider: attempt.provider,
+      model: attempt.model,
+      failure: netFail(),
+      signal: new AbortController().signal,
+    }, () => Promise.resolve(undefined))
+    decisions.push(action?.kind)
+  }
+  const statusAfter = await tools.get('model_orchestrator').execute({ action: 'status', sessionId: 's-domain' })
+  const logged = statusAfter.decisions ?? []
+  const reasons = logged.map(item => String(item.reason ?? ''))
+  checkThat('连接层失败不会触发「换道预算耗尽」',
+    !logged.some(item => item.kind === 'switch-budget-exhausted'),
+    JSON.stringify(logged.map(item => item.kind)))
+  checkThat('决策日志里出现了整域短路的判决理由',
+    reasons.some(reason => reason.includes('整域短路')),
+    String(reasons.find(reason => reason.includes('整域短路')) ?? '').slice(0, 90))
+  checkThat('第一次连接失败仍然给出了 retry（没有把整轮判死）',
+    decisions[0] === 'retry' || decisions[0] === undefined, JSON.stringify(decisions))
+}
+
 console.log('\n[8b] 巡检路由：读状态免费，跑一轮是显式动作')
 {
   const probeRoute = routes.get('/api/model-orchestrator/probe')

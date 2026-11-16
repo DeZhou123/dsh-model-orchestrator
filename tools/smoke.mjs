@@ -26,7 +26,7 @@ import {
 import { resolveConfig, sanitizePatch, STRATEGIES } from '../src/config.js'
 import { createInflight } from '../src/inflight.js'
 import { datasetFromReport } from '../src/report-import.js'
-import { COOLDOWN, DEFAULT_CONFIG, ESCALATION, STRATEGIES as STRATEGY_TABLE } from '../src/policy-defaults.js'
+import { CONNECTIVITY, COOLDOWN, DEFAULT_CONFIG, ESCALATION, STRATEGIES as STRATEGY_TABLE } from '../src/policy-defaults.js'
 import { foldCandidates, foldKey, NON_INTERACTIVE_SUFFIX } from '../src/families.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -1420,6 +1420,60 @@ console.log('\n[19] 2026-11-16 批 2 回归：车道计数不再恒为 0 / 幽�
   const raw = fs.readFileSync(path.join(dir, 'health.json'), 'utf8')
   checkThat('账本落盘是紧凑 JSON（没有两空格缩进换行）',
     !/\n\s{2}/.test(raw) && raw.trim().length > 0, '字节 ' + raw.length)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('\n[20] 2026-11-16 批 3 回归：故障域短路（连接层失败不该烧掉换道预算）')
+
+{
+  const netFail = () => ({ code: 'ECONNRESET', message: 'fetch failed: socket hang up' })
+  let now = NOW
+  const h = createHealth({ userDir: null, clock: () => now })
+  const first = h.markFailure('cline', 'model-a', netFail())
+  const second = h.markFailure('cline', 'model-b', netFail())
+  checkThat('前两次连接失败仍是模型级（单次抖动不值得整域下车）',
+    first.scope === 'model' && second.scope === 'model',
+    JSON.stringify([first.scope, second.scope]))
+  checkThat('此时该渠道的其它模型仍然可用',
+    h.stateOf('cline', 'model-c').available === true, JSON.stringify(h.stateOf('cline', 'model-c')))
+
+  const third = h.markFailure('cline', 'model-c', netFail())
+  checkThat('第三次连接失败升为整域短路（带 domainDown 让调用方豁免预算）',
+    third.scope === 'lane' && third.endpointDown === true && third.domainDown === true,
+    JSON.stringify([third.scope, third.endpointDown, third.domainDown]))
+  checkThat('整域短路后同一渠道的**所有**模型都不可用',
+    ['model-a', 'model-b', 'model-c'].every(m => h.stateOf('cline', m).available === false),
+    JSON.stringify(['model-a', 'model-b', 'model-c'].map(m => h.stateOf('cline', m).available)))
+  checkThat('短路时长是分钟级而不是小时级（可自愈）',
+    third.cooldownMs <= 5 * 60_000 && third.cooldownMs >= 30_000, String(third.cooldownMs))
+
+  // 一次成功调用就是「线路通了」的证据：连败清零、短路解除
+  h.markSuccess('cline', 'model-a', { ttftMs: 900, inputTokens: 10, outputTokens: 5 })
+  checkThat('成功调用解除整域短路',
+    h.stateOf('cline', 'model-b').available === true,
+    JSON.stringify(h.stateOf('cline', 'model-b')))
+
+  // 窗口外的失败不该累计：两次 + 两次（跨窗口）永远到不了三次
+  const h2 = createHealth({ userDir: null, clock: () => now })
+  h2.markFailure('trae', 'm1', netFail())
+  h2.markFailure('trae', 'm2', netFail())
+  now += CONNECTIVITY.windowMs + 1_000
+  const late = h2.markFailure('trae', 'm3', netFail())
+  checkThat('窗口外的失败重新计数（不会被算成第三次）',
+    late.scope === 'model' && late.domainDown !== true,
+    JSON.stringify([late.scope, late.domainDown ?? null]))
+
+  // 路由面：整域短路后 selectRoute 必须跳过该渠道的全部车道
+  const rows = [
+    lane('cline', 'model-a'),
+    lane('cline', 'model-b'),
+    lane('buddy', 'glm-5.3', { quality: 0.5 }),
+  ]
+  const cfg = resolveConfig({}, {})
+  const h3 = createHealth({ userDir: null, clock: () => now })
+  for (const m of ['model-a', 'model-b', 'model-a']) h3.markFailure('cline', m, netFail())
+  const routed = selectRoute({ rows, health: h3, config: cfg, anchor: null, needs: readNeeds({}, cfg), mode: 'auto' })
+  check('整域短路后路由整片跳过该渠道', routed?.provider, 'buddy')
 }
 console.log('\n' + (failures === 0 ? 'PASS' : 'FAIL') + ' — ' + (checks - failures) + '/' + checks)
 if (failures > 0) process.exitCode = 1

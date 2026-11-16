@@ -43,7 +43,7 @@ import { createInflight } from './src/inflight.js'
 import {
   evaluate, preferenceConflicts, rankGroups, rankLanes, readNeeds, resolvePreferenceGroup, selectRoute,
 } from './src/router.js'
-import { DEFAULT_CONFIG } from './src/policy-defaults.js'
+import { CONNECTIVITY, DEFAULT_CONFIG } from './src/policy-defaults.js'
 import { foldKey } from './src/families.js'
 import { installHttpApi } from './src/http.js'
 import { registerAgentSurface } from './src/tools.js'
@@ -56,7 +56,7 @@ export const name = 'model-orchestrator'
 /** `llm` is what the plugin exists for. The rest degrades feature by feature. */
 export const inject = ['llm']
 
-export const version = '2.13.0'
+export const version = '2.14.0'
 
 /**
  * 这条 provider 是不是「借来的聚合车道」。
@@ -1528,7 +1528,23 @@ export function apply(ctx, rawConfig = {}) {
     const overdraft = Number.isFinite(Number(config.switchOverdraft))
       ? Math.max(0, Math.round(Number(config.switchOverdraft)))
       : EXTRA_SWITCHES
-    const canSwitch = budgetLeft || extraUsed < overdraft
+    // 故障域短路（FIX 2026-11-16）：连接层失败不是「这条模型不行」，换道不该消耗步骤预算 ——
+    // 否则一个死端点会把 8 次预算全部烧掉（实测 45 秒内 6 次 switch-budget-exhausted，
+    // 每次 reason 都是同一个 ECONNRESET）。改用按回合的独立配额：既不计入预算，
+    // 也不至于在真断网时无限循环。
+    const domainDown = verdict.domainDown === true || verdict.endpointDown === true
+    // 整域短路必须在决策日志里留痕：否则面板只会看到「这条渠道忽然不见了」，
+    // 看不到原因是「线路不通」而不是「模型坏了」（FIX 2026-11-16）。
+    if (domainDown) {
+      health.logDecision({
+        kind: 'domain-down',
+        from: routeLabel(route),
+        reason: failureReason(verdict),
+        sessionId: state.agent.id,
+      }, runtime.config.decisionLogSize)
+    }
+    const domainFree = Number(state.domainSwitches ?? 0) < Number(CONNECTIVITY.freeSwitchesPerTurn ?? 4)
+    const canSwitch = (budgetLeft || extraUsed < overdraft) || (domainDown && domainFree)
     if (!canSwitch) {
       health.logDecision({
         kind: 'switch-budget-exhausted',
@@ -1597,7 +1613,7 @@ export function apply(ctx, rawConfig = {}) {
 
     if (switchable && canSwitch) {
       if (input.mode === 'prefer') notePreference(state, decision)
-      const applied = switchTo(state, route, decision, verdict, config, budgetLeft ? 0 : 1)
+      const applied = switchTo(state, route, decision, verdict, config, budgetLeft ? 0 : 1, { free: domainDown && domainFree })
       // 换道没写成（selection 写失败）：绝不能吞掉这次失败，交回内核去退避重试。
       if (applied !== null) return applied
       return next()
@@ -1632,7 +1648,7 @@ export function apply(ctx, rawConfig = {}) {
   }
 
   /** 换道 + 记账，成功时返回内核要的 retry 动作。 */
-  function switchTo(state, route, decision, verdict, config, extra = 0) {
+  function switchTo(state, route, decision, verdict, config, extra = 0, options = {}) {
     try {
       applyRoute(state, decision, 'failover')
     } catch {
@@ -1640,9 +1656,15 @@ export function apply(ctx, rawConfig = {}) {
     }
     // 计数只在换道真的写成之后才记：一条写不进 selection 的换道没有换来任何东西，
     // 不该消耗本步骤的预算。
-    state.stepSwitches += 1
-    state.turnSwitches += 1
-    if (extra > 0) state.extraSwitches = Number(state.extraSwitches ?? 0) + extra
+    if (options.free === true) {
+      // 故障域短路：这次换道的原因是「线路不通」，不是「模型不行」，因此不占步骤/回合
+      // 预算，只占按回合的独立配额（见 recover 的 domainDown）。
+      state.domainSwitches = Number(state.domainSwitches ?? 0) + 1
+    } else {
+      state.stepSwitches += 1
+      state.turnSwitches += 1
+      if (extra > 0) state.extraSwitches = Number(state.extraSwitches ?? 0) + extra
+    }
     health.logDecision({
       kind: 'failover',
       from: routeLabel(route),
@@ -1885,6 +1907,8 @@ export function apply(ctx, rawConfig = {}) {
       state.turnProduced = false
       state.extraSwitches = 0
       state.lastResortUsed = 0
+      // 故障域短路用的独立配额：按回合重置（step 级不动它，见 recover 的 domainDown）。
+      state.domainSwitches = 0
       return
     }
     if (event.type === 'turn/end') {

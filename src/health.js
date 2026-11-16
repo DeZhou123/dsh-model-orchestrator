@@ -15,7 +15,7 @@
 
 import path from 'node:path'
 import fs from 'node:fs'
-import { COOLDOWN, ESCALATION, FAILURE_BURST, REQUEST_REPEAT, STRIKE_HALF_LIFE_MS, TOKEN_WINDOWS } from './policy-defaults.js'
+import { CONNECTIVITY, COOLDOWN, ESCALATION, FAILURE_BURST, REQUEST_REPEAT, STRIKE_HALF_LIFE_MS, TOKEN_WINDOWS } from './policy-defaults.js'
 import { writeJsonAtomic } from './dataset.js'
 
 /** Failure kinds the router reasons about. */
@@ -67,6 +67,11 @@ const LANE_WIDE = new Set([KIND.QUOTA, KIND.PLAN, KIND.REGION, KIND.AUTH, KIND.U
  * load 时的自愈能重新认出它（见 healAggregator）。
  */
 const AGGREGATOR_MARK = '〔聚合车道：仅本模型〕'
+
+/** 故障域（连接层）整域短路的 reason 前缀；成功调用按它解除同渠道的兄弟停车。 */
+const DOMAIN_DOWN_MARK = '〔整域短路〕'
+/** 互借端点不可达的 reason 前缀（同一条解除规则）。 */
+const PEER_ENDPOINT_MARK = '〔互借端点不可达〕'
 // KIND.SAFETY is deliberately absent: a content refusal applies to the model on
 // that channel, while the channel's other models keep serving — the pack's own
 // policy-block bookkeeping is per account+model for the same reason.
@@ -562,7 +567,18 @@ export function createHealth(options = {}) {
     const key = laneKey(provider)
     let record = lanes.get(key)
     if (record === undefined) {
-      record = { provider: key, status: KIND.OK, until: 0, reason: '', strikes: 0, lastAt: 0, counters: emptyCounters() }
+      record = {
+        provider: key,
+        status: KIND.OK,
+        until: 0,
+        reason: '',
+        strikes: 0,
+        lastAt: 0,
+        // 故障域（连接层）连败计数与时间戳，见 markFailure 的整域短路段。
+        connectStrikes: 0,
+        connectAt: 0,
+        counters: emptyCounters(),
+      }
       lanes.set(key, record)
     }
     return record
@@ -736,7 +752,8 @@ export function createHealth(options = {}) {
         ...verdict,
         scope: 'lane',
         endpointDown: true,
-        reason: '〔互借端点不可达〕' + verdict.reason,
+        domainDown: true,
+        reason: PEER_ENDPOINT_MARK + verdict.reason,
       }
     }
     // ── 方向二：其它车道级判决照旧降为模型级 ───────────────────────────────
@@ -794,8 +811,35 @@ export function createHealth(options = {}) {
     const now = clock()
     const lane = laneRecord(provider)
     const record = modelRecord(provider, model)
-    const verdict = capProbeVerdict(failure,
+    let verdict = capProbeVerdict(failure,
       demoteOnAggregator(provider, classifyFailure(failure, { strikes: record.strikes, now })))
+
+    // ── 故障域短路：连接层失败是「端点到不了」，不是「这个模型不行」（FIX 2026-11-16）──
+    //
+    // 实测形状：一次会话里 45 秒内 6 次 switch-budget-exhausted，全部撞在同一个
+    // cline ECONNRESET 上 —— 每一次都换到同一条死线路的另一个模型，8 次换道预算烧光，
+    // 整轮以错误收场。连接失败在**渠道层**是同一个事实：这个 base URL 此刻不通。
+    //
+    // 判据刻意要 3 次而不是 1 次：单次连接抖动（代理偶发 reset）不值得整域下车。
+    // 达到阈值后升为车道级 + endpointDown，该渠道的全部模型一起退出候选（stateOf 认这两条），
+    // 冷却短（60 秒）且一次成功调用即可解除 —— 与「凭据/套餐」那种需要人介入的停车不同。
+    if (verdict.connectivity === true && verdict.scope !== 'lane') {
+      const inWindow = Number(lane.connectAt ?? 0) > 0
+        && now - Number(lane.connectAt) <= CONNECTIVITY.windowMs
+      lane.connectStrikes = inWindow ? Number(lane.connectStrikes ?? 0) + 1 : 1
+      lane.connectAt = now
+      if (lane.connectStrikes >= CONNECTIVITY.strikes) {
+        verdict = {
+          ...verdict,
+          cooldownMs: CONNECTIVITY.cooldownMs,
+          scope: 'lane',
+          endpointDown: true,
+          domainDown: true,
+          reason: DOMAIN_DOWN_MARK + lane.connectStrikes + ' 次连接失败/'
+            + Math.round(CONNECTIVITY.windowMs / 1000) + 's：' + verdict.reason,
+        }
+      }
+    }
 
     // A malformed request, and a prompt that does not fit this model's window,
     // say nothing about the lane's health. Neither may enter the ledger:
@@ -958,6 +1002,9 @@ export function createHealth(options = {}) {
     // objecting to, it is not objecting now.
     record.rejects = 0
     record.rejectsAt = 0
+    // 一次成功就是「这条线路此刻通」的证据：故障域连败清零（FIX 2026-11-16）。
+    lane.connectStrikes = 0
+    lane.connectAt = 0
     // And it ends a failure burst: the next failure is a fresh event and must
     // earn its own strike (see markFailure's burst deduplication).
     record.lastKind = ''
@@ -1026,6 +1073,23 @@ export function createHealth(options = {}) {
       for (const sibling of models.values()) {
         if (sibling.provider !== provider) continue
         if (!LANE_WIDE.has(sibling.status)) continue
+        sibling.status = KIND.OK
+        sibling.until = 0
+        sibling.reason = ''
+      }
+    }
+    // 故障域短路留下的停车也要一起解除（FIX 2026-11-16）。
+    //
+    // 整域短路的判决是 TRANSIENT（分钟级、可自愈），而 TRANSIENT **不在** LANE_WIDE 里——
+    // 于是上面那段「车道级判决要连兄弟一起放」的分支管不到它：一次成功调用解除了 lane 的
+    // endpointDown，同一渠道的兄弟模型却还各自背着 60 秒的停车。判据只看 reason 前缀：
+    // 只有「由故障域判决写下的」记录才清，别的瞬时冷却（我们自己的抖动）不动。
+    if (lane.endpointDown !== true) {
+      for (const sibling of models.values()) {
+        if (sibling.provider !== provider) continue
+        if (sibling === record) continue
+        const reason = String(sibling.reason ?? '')
+        if (!reason.startsWith(DOMAIN_DOWN_MARK) && !reason.startsWith(PEER_ENDPOINT_MARK)) continue
         sibling.status = KIND.OK
         sibling.until = 0
         sibling.reason = ''
