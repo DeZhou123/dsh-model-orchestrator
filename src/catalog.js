@@ -21,6 +21,7 @@
 import { familyInfo, familyResolutionFor, deniedReason, reportLaneTtft } from './dataset.js'
 import { foldKey, NON_INTERACTIVE_SUFFIX } from './families.js'
 import { EFFORT_RANK, MAX_INTEL, NEUTRAL_INTEL_SCORE } from './policy-defaults.js'
+import { resolveBilling } from './providers.js'
 
 /** Run `worker` over `items` with a bounded number in flight. */
 async function pooled(items, limit, worker) {
@@ -345,7 +346,18 @@ export function createCatalog(options) {
       && String(config.peerShare.peerProvider ?? '').toLowerCase() === row.provider.toLowerCase()
     const multiplier = laneMultiplier(row.modelName)
     const freeLane = laneIsFree(row.modelName)
-    const burn = costFactor(tags) * multiplier * (freeLane ? 0.6 : 1)
+    // 计费语义先看显示名，名字里没有价格信息才落到渠道声明（src/providers.js）。
+    // 这样 free-pi 的无限档与 x22 倍率档、以及 freellmapi 那 332 个没有价格尾巴的
+    // 免费模型，都能被正确计价；未声明的渠道行为与之前逐位相同。
+    const billing = resolveBilling({
+      provider: row.provider,
+      modelName: row.modelName,
+      tagCost: costFactor(tags),
+      multiplier,
+      freeLane,
+      overrides: config.providerProfiles,
+    })
+    const burn = billing.burn
 
     return {
       ...row,
@@ -369,6 +381,12 @@ export function createCatalog(options) {
       multiplier,
       freeLane,
       burn,
+      /** 额度与用量无关：router 据此让 usage 项失效，不再因「用得多」降权。 */
+      unlimited: billing.unlimited,
+      /** 计费来源：'name' 名字解析 / 'provider' 渠道声明，面板与日志用。 */
+      billingSource: billing.source,
+      /** 冷启动首字延迟先验（ms）；没有 live 样本时替代 0.5 这个中性常数。 */
+      ttftPriorMs: billing.profile?.ttftPriorMs ?? null,
       channel,
       borrowed,
     }

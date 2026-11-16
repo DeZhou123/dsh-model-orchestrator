@@ -30,6 +30,7 @@
 import os from 'node:os'
 import fs from 'node:fs'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 
 import { createDataset, familyFor, writeJsonAtomic } from './src/dataset.js'
 import { createHealth, KIND } from './src/health.js'
@@ -55,7 +56,7 @@ export const name = 'model-orchestrator'
 /** `llm` is what the plugin exists for. The rest degrades feature by feature. */
 export const inject = ['llm']
 
-export const version = '2.9.0'
+export const version = '2.12.0'
 
 /**
  * 这条 provider 是不是「借来的聚合车道」。
@@ -109,6 +110,87 @@ function sameRoute(left, right) {
 function sameModel(left, right) {
   if (left === null || left === undefined || right === null || right === undefined) return left === right
   return left.model === right.model
+}
+
+/**
+ * 换道预算之外还允许的换道次数（LOCAL PATCH 2026-11-16）。
+ *
+ * 判据：实测 38 个以 error 收场的回合里，13 个在**还有可用车道**的时候因为
+ * `maxSwitchesPerStep` 用尽而失败；每一个这样的回合都要用户手动重试一次。
+ * 多换两次的代价是一次请求，回合失败的代价是一次人工介入——两害相权取其轻。
+ * 上限仍然存在，避免一条真死的目录把整轮变成扫描器。
+ */
+const EXTRA_SWITCHES = 2 // 兜底值；实际读 config.switchOverdraft（见 recover 的 canSwitch）
+
+/**
+ * 这些失败不该触发回合级自动续跑（LOCAL PATCH 2026-11-16）。
+ *
+ * 自动续跑解决的是「渠道坏了」——换一条车道就能继续。下面这些不是：
+ *  - 用户/宿主主动停的（ABORTED、INTERRUPTED）：续跑等于跟用户对着干；
+ *  - 上下文超限：同一个上下文再跑一遍会在同一处再超一次，正确出路是压缩；
+ *  - 我们自己的请求不合法：换渠道也一样不合法。
+ */
+const AUTO_RESUME_EXCLUDED = new Set([
+  'ABORTED',
+  'INTERRUPTED',
+  'CANCELLED',
+  'CONTEXT_WINDOW_EXCEEDED',
+  'INVALID_REQUEST',
+  'UNSUPPORTED_REASONING_EFFORT',
+])
+
+/**
+ * 一条车道的稳定键。用 NUL 分隔是因为 provider 与 model 里都可能出现 "/"。
+ *
+ * 与 router 的 `inspectLane` 必须逐字一致——那边的 exclude 是同一套键。
+ */
+function laneKey(provider, model) {
+  return String(provider ?? '') + '\u0000' + String(model ?? '')
+}
+
+/** 可中断的等待。信号已中止时立刻返回，绝不把回合拖在 sleep 里。 */
+function sleep(ms, signal) {
+  if (!Number.isFinite(ms) || ms <= 0) return Promise.resolve()
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, ms)
+    timer.unref?.()
+    function done() {
+      signal?.removeEventListener?.('abort', onAbort)
+      resolve()
+    }
+    function onAbort() {
+      clearTimeout(timer)
+      resolve()
+    }
+    if (signal === undefined || signal === null) return
+    if (signal.aborted === true) return done()
+    signal.addEventListener?.('abort', onAbort, { once: true })
+  })
+}
+
+/** 递归冻结（等价于 dsh-util-values 的 deepFreeze，几行就够）。 */
+function deepFreeze(value) {
+  if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return value
+  Object.freeze(value)
+  for (const key of Object.keys(value)) deepFreeze(value[key])
+  return value
+}
+
+/**
+ * 造一条已冻结的 user 消息（与 dsh-session-relay 同款）。
+ *
+ * 刻意不 import `@deepseek-ai/dsh-llm`：那份 `createUserMessage` 做的事就是
+ * `deepFreeze(structuredClone({ ...input, id: randomUUID() }))`，而多一个 peer
+ * 依赖就多一个装不上的机会（profile 的 node_modules 里没有 @deepseek-ai/dsh-llm）。
+ * 用内置 crypto 自己造，插件就是零 dsh 依赖，装到哪个 profile 都能跑。
+ */
+function userMessage(input) {
+  return deepFreeze(structuredClone({
+    role: 'user',
+    content: [{ type: 'text', text: String(input.text) }],
+    source: { kind: input.kind },
+    id: randomUUID(),
+  }))
 }
 
 /**
@@ -187,7 +269,7 @@ export function apply(ctx, rawConfig = {}) {
    * sessions see each other's load. See `src/inflight.js` and CONCURRENCY in
    * `src/policy-defaults.js`.
    */
-  const inflight = createInflight({ staleMs: Number(runtime.config.concurrencyStaleMs ?? 0) || undefined })
+  const inflight = createInflight({ staleMs: () => runtime.config.concurrencyStaleMs })
 
   const observer = createObserver({
     health,
@@ -195,6 +277,12 @@ export function apply(ctx, rawConfig = {}) {
     onSample: (sample) => {
       const state = sample.sessionId === undefined ? undefined : sessions.get(sample.sessionId)
       if (state === undefined) return
+      // 一次成功的调用就是这条车道活着的证据：把它从"本轮死车道"里放出来
+      // （LOCAL PATCH 2026-11-16）。少了这一句，一次瞬时抖动会把一条车道钉到
+      // 回合结束——偏好模式明明恢复了，候选池里却没有它，表现为"偏好没生效"。
+      const revived = laneKey(sample.provider, sample.model)
+      if (state.stepDeadLanes instanceof Set) state.stepDeadLanes.delete(revived)
+      if (state.turnDeadLanes instanceof Set) state.turnDeadLanes.delete(revived)
       // A title or compaction call spends the lane's quota but is not part of the
       // conversation's token budget; counting it would trip the economy switch
       // on work the user never asked for.
@@ -559,8 +647,21 @@ export function apply(ctx, rawConfig = {}) {
     return publicConfig()
   }
 
+  /**
+   * 展示用的配置副本。
+   *
+   * 必须脱敏（FIX 2026-11-16）：`peerShare.token` 是出借端点的 bearer 凭据——拿到它
+   * 就能花对侧实例的额度。它随 `action=status`／`action=summary` 原样出现在工具结果、
+   * 面板轮询与**会话日志**里，等于把凭据写进每一次对话记录。出借方自己（peerConfig、
+   * peershare 的 config 回调）读的是 runtime.config，不受这里影响。
+   */
   function publicConfig() {
-    return { ...runtime.config }
+    const config = { ...runtime.config }
+    const peer = config.peerShare
+    if (peer !== null && peer !== undefined && typeof peer === 'object' && peer.token) {
+      config.peerShare = { ...peer, token: '***redacted***' }
+    }
+    return config
   }
 
   // ── live catalog ──────────────────────────────────────────────────────────
@@ -765,6 +866,21 @@ export function apply(ctx, rawConfig = {}) {
       lastSwitchAt: 0,
       preferenceExhausted: null,
       preferenceSuspended: false,
+      // ── 失败恢复的会话内记忆（LOCAL PATCH 2026-11-16）─────────────────────
+      // 实测：单步骤 10~22 次失败里，绝大多数是**同一条已经证明死掉的车道**
+      // 被重新选回来（session-e4a79c6d 一个 step 在 qoder 上撞 10 次）。
+      // 这两组集合是"这一轮里这条车道已经完了"的唯一权威判据，不依赖冷却时长。
+      stepDeadLanes: new Set(),
+      turnDeadLanes: new Set(),
+      // 最后一搏（等冷却结束再试）在本步骤里用掉了几次。
+      lastResortUsed: 0,
+      extraSwitches: 0,
+      // 回合因车道故障中断后自动续跑的连击计数；回合正常完成即归零。
+      resumeChain: 0,
+      resumeAt: 0,
+      resumeTimer: null,
+      // 本回合是否已经产出过内容。中断后续跑要连上它，而不是从零重来。
+      turnProduced: false,
       userEffort: undefined,
       lastPreferenceNotifyAt: 0,
       // Set the moment a request actually leaves the process. `applied` is cleared
@@ -1304,8 +1420,16 @@ export function apply(ctx, rawConfig = {}) {
       state.external = null
     }
 
-    const input = selectionInput(state)
-    const decision = selectRoute(input)
+    // 本回合已经失败过的车道，这一步不再选（LOCAL PATCH 2026-11-16）。
+    // 冷却账本是跨会话的，而"这个回合刚刚在这条车道上栽过"是会话内的事实——
+    // 少了它，第二个步骤会从同一个死车道重新开始，把同一场失败重演一遍。
+    const dead = state.turnDeadLanes instanceof Set && state.turnDeadLanes.size > 0
+      ? state.turnDeadLanes
+      : undefined
+    const input = dead === undefined ? selectionInput(state) : { ...selectionInput(state), exclude: dead }
+    let decision = routeOrNull(input)
+    // 排除面把候选清空时退回无排除的候选池：一条冷却中的车道总好过没有车道。
+    if (decision === null && dead !== undefined) decision = routeOrNull(selectionInput(state))
     if (decision === null) return null
     if (decision.blocked === true) {
       if (input.mode === 'prefer') notePreference(state, decision)
@@ -1367,14 +1491,44 @@ export function apply(ctx, rawConfig = {}) {
 
     const verdict = health.markFailure(route.provider, route.model, payload.failure)
     health.persist()
+    // 这一轮里这条车道已经证明过自己不行了（LOCAL PATCH 2026-11-16）。
+    //
+    // 为什么必须记在会话里、而不能只靠冷却账本：冷却有长有短（瞬时 30 秒），
+    // 而"这一轮的这一步已经在这条车道上失败过"是**与冷却无关**的事实。旧代码的
+    // `exclude` 只装"刚刚失败的那一条"，于是 A 失败 → 换到 B → B 失败 → 又换回 A，
+    // 一个步骤在两条死车道之间来回撞（实测 session-e4a79c6d 一个 step 在 qoder 上
+    // 撞了 10 次）。这两组集合是换道时唯一权威的排除面。
+    const deadKey = laneKey(route.provider, route.model)
+    if (state.stepDeadLanes instanceof Set) state.stepDeadLanes.add(deadKey)
+    if (state.turnDeadLanes instanceof Set) state.turnDeadLanes.add(deadKey)
     // A single rejected request is our own mistake and must not move the route
     // — the lane is innocent. One that repeats is not: `markFailure` parks the
     // model after `requestRepeatThreshold` refusals inside the window and flags
     // the verdict `blocked`, and that verdict is what lets this turn reroute
     // instead of ending in an error the user has to work around by hand.
     if (verdict.kind === KIND.REQUEST && verdict.blocked !== true) return next()
-    if (state.stepSwitches >= config.maxSwitchesPerStep) return next()
-    if (state.turnSwitches >= config.maxSwitchesPerTurn) return next()
+
+    // 换道预算：正常额度之外还有 EXTRA_SWITCHES 的"宁可换也不要死"余量。
+    // 为什么允许超预算：实测 38 个 error 回合里，13 个是在**还有可用车道**的情况下
+    // 因为预算耗尽而失败的——用户看到的"这一轮运行失败"其实只是预算太小。
+    const budgetLeft = state.stepSwitches < config.maxSwitchesPerStep
+      && state.turnSwitches < config.maxSwitchesPerTurn
+    const extraUsed = Number(state.extraSwitches ?? 0)
+    // 超额余量走配置面（FIX 2026-11-16）：旧版本硬编码 2，用户无论怎么调
+    // maxSwitchesPerStep 都算不出真实预算（clamp 上限又只有 10）。
+    const overdraft = Number.isFinite(Number(config.switchOverdraft))
+      ? Math.max(0, Math.round(Number(config.switchOverdraft)))
+      : EXTRA_SWITCHES
+    const canSwitch = budgetLeft || extraUsed < overdraft
+    if (!canSwitch) {
+      health.logDecision({
+        kind: 'switch-budget-exhausted',
+        from: routeLabel(route),
+        reason: '本步骤已换道 ' + state.stepSwitches + ' 次（含超额 ' + extraUsed + ' 次），仍在 '
+          + failureReason(verdict) + '；转入最后一搏',
+        sessionId: state.agent.id,
+      }, runtime.config.decisionLogSize)
+    }
 
     state.priorFailures += 1
     refreshChannelData()
@@ -1409,6 +1563,14 @@ export function apply(ctx, rawConfig = {}) {
       ? state.stepFailedFamilies
       : (state.stepFailedFamilies = new Set())
     if (repeatFamily) parkedFamilies.add(failedKey)
+    // 换道时的排除面 = 本步骤失败过的 + 本回合失败过的（含刚刚这一条）。
+    // 同一族群的兄弟车道可以被排除，但**绝不排除整个候选池**：真的一条都不剩时，
+    // 下面的「最后一搏」才是正确的下一步。
+    const dead = new Set()
+    for (const item of state.turnDeadLanes instanceof Set ? state.turnDeadLanes : []) dead.add(item)
+    for (const item of state.stepDeadLanes instanceof Set ? state.stepDeadLanes : []) dead.add(item)
+    dead.add(deadKey)
+
     const input = {
       ...selectionInput(state),
       anchor,
@@ -1417,31 +1579,61 @@ export function apply(ctx, rawConfig = {}) {
       // the one case where the same model cannot help.
       forceGroupKey: isContext ? null : failedKey,
       excludeFamilies: parkedFamilies,
-      exclude: new Set([route.provider + '\u0000' + route.model]),
+      exclude: dead,
       minContextWindow: isContext && Number.isFinite(failedRow?.contextWindow) ? failedRow.contextWindow : undefined,
     }
-    let decision = null
-    try {
-      decision = selectRoute(input)
-    } catch {
-      decision = null
-    }
-    if (decision === null) return next()
-    if (decision.blocked === true) {
+    const decision = routeOrNull(input)
+    const switchable = decision !== null && decision.blocked !== true
+      && !(decision.provider === route.provider && decision.model === route.model)
+
+    if (switchable && canSwitch) {
       if (input.mode === 'prefer') notePreference(state, decision)
-      if (decision.fallback === 'off') state.applied = null
+      const applied = switchTo(state, route, decision, verdict, config, budgetLeft ? 0 : 1)
+      // 换道没写成（selection 写失败）：绝不能吞掉这次失败，交回内核去退避重试。
+      if (applied !== null) return applied
       return next()
     }
-    if (input.mode === 'prefer') notePreference(state, decision)
-    if (decision.provider === route.provider && decision.model === route.model) return next()
+    if (switchable && decision !== null && input.mode === 'prefer') notePreference(state, decision)
+    if (decision !== null && decision.blocked === true) {
+      if (input.mode === 'prefer') notePreference(state, decision)
+      // Fallback `off` means "do not choose for me": stop forcing a route so the
+      // kernel's own selection (the user's picker) is what runs next.
+      if (decision.fallback === 'off') state.applied = null
+    }
 
-    state.stepSwitches += 1
-    state.turnSwitches += 1
+    // ── 最后一搏 ────────────────────────────────────────────────────────────
+    //
+    // 走到这里说明本步骤已经没有"现在就能用"的替代车道：要么全都还在冷却，
+    // 要么换道预算刚刚用尽。旧代码在这里 `return next()`，于是原始错误直接
+    // 冒到界面上——「本轮运行失败」，用户必须自己重试，而且往往重试也没用，
+    // 因为冷却还在。真正该做的是**等**：账本里写着每条车道什么时候回来，
+    // 挑最早的那条等到它回来再试一次。
+    const resort = await tryLastResort(state, route, dead, verdict, switchable, canSwitch, config, payload.signal)
+    if (resort !== null) return resort
+    return next()
+  }
+
+  /** `selectRoute` 从不让一个异常把整轮带走。 */
+  function routeOrNull(input) {
+    try {
+      return selectRoute(input)
+    } catch {
+      return null
+    }
+  }
+
+  /** 换道 + 记账，成功时返回内核要的 retry 动作。 */
+  function switchTo(state, route, decision, verdict, config, extra = 0) {
     try {
       applyRoute(state, decision, 'failover')
     } catch {
-      return next()
+      return null
     }
+    // 计数只在换道真的写成之后才记：一条写不进 selection 的换道没有换来任何东西，
+    // 不该消耗本步骤的预算。
+    state.stepSwitches += 1
+    state.turnSwitches += 1
+    if (extra > 0) state.extraSwitches = Number(state.extraSwitches ?? 0) + extra
     health.logDecision({
       kind: 'failover',
       from: routeLabel(route),
@@ -1452,6 +1644,187 @@ export function apply(ctx, rawConfig = {}) {
       sessionId: state.agent.id,
     }, runtime.config.decisionLogSize)
     return { kind: 'retry' }
+  }
+
+  /**
+   * 最后一条路：等到最早恢复的那条车道可用，然后换过去（或原地重试）。
+   *
+   * 三种"没得换"的情形必须分开处理，因为它们要等的时间差几个数量级：
+   *  - 全部在瞬时冷却（30 秒级）→ 等，然后必然能重试；
+   *  - 全部因为凭据/订阅被停（小时级）→ 等一下没有意义；交给回合级自动续跑；
+   *  - 目录本身就没有别的车道 → 同第一条，但等的对象是这条车道自己。
+   *
+   * @returns {object|null} `{kind:'retry'}` 当且仅当真的等到了值得一试的时刻。
+   */
+  async function tryLastResort(state, route, dead, verdict, switchable, canSwitch, config, signal) {
+    if (signal?.aborted === true) return null
+    if (Number(state.lastResortUsed ?? 0) >= Number(config.lastResortPerStep ?? 1)) return null
+    if (switchable === true && canSwitch === true) return null
+    const wait = soonestRecoveryMs(state, config)
+    if (wait === null) return null
+    const cap = Number(config.lastResortWaitMs ?? 30_000)
+    if (wait > cap) {
+      health.logDecision({
+        kind: 'last-resort-skipped',
+        from: routeLabel(route),
+        reason: '最早的可用车道还要 ' + Math.round(wait / 1000) + ' 秒才恢复（上限 ' + Math.round(cap / 1000)
+          + ' 秒），等待没有意义，交给回合级自动续跑',
+        sessionId: state.agent.id,
+      }, runtime.config.decisionLogSize)
+      return null
+    }
+    state.lastResortUsed = Number(state.lastResortUsed ?? 0) + 1
+    const waited = Math.max(0, Math.round(wait)) + 400
+    health.logDecision({
+      kind: 'last-resort-wait',
+      from: routeLabel(route),
+      reason: failureReason(verdict) + ' → 候选全在冷却，等待 ' + Math.round(waited / 1000) + ' 秒后重试',
+      sessionId: state.agent.id,
+    }, runtime.config.decisionLogSize)
+    // 界面上的静默最容易被读成卡死：超过 3 秒的等待必须自己说明一次。
+    if (waited > 3_000) {
+      notify('模型调度：正在等待车道恢复', failureReason(verdict) + '，所有候选都在冷却。'
+        + '约 ' + Math.ceil(waited / 1000) + ' 秒后自动重试（不会结束这一轮）。')
+    }
+    await sleep(waited, signal)
+    if (signal?.aborted === true) return null
+
+    // 冷却可能刚好过期：重新算一次。这次排除面里不含"刚刚等回来的那条"，
+    // 否则我们会把自己刚等活的候选又排除掉。
+    const revived = routeOrNull({
+      ...selectionInput(state),
+      anchor: withKey(route),
+      needs: needsFor(state),
+      excludeFamilies: state.stepFailedFamilies instanceof Set ? state.stepFailedFamilies : new Set(),
+      exclude: dead,
+    })
+    if (revived !== null && revived.blocked !== true
+      && !(revived.provider === route.provider && revived.model === route.model)) {
+      const applied = switchTo(state, route, revived, verdict, config, 1)
+      if (applied !== null) return applied
+    }
+    // 没有更好的：在原车道上再试一次——它刚刚从冷却里出来，这一次是新的证据。
+    return { kind: 'retry' }
+  }
+
+  /**
+   * 最早多久之后会有一条车道可用（毫秒）。
+   *
+   * 只读账本，不猜：每条候选车道问一次 `stateOf`，取 `until` 里最近的一个。
+   * 目录里一条冷却记录都没有时返回 null——"没有在冷却的车道"与"全在冷却"是
+   * 两件完全不同的事，不能用同一个 0 表示。
+   */
+  function soonestRecoveryMs(state, config) {
+    const now = Date.now()
+    const rows = catalog.current?.rows ?? []
+    let soonest = null
+    for (const row of rows) {
+      if (row === null || row === undefined) continue
+      if (row.denied === true) continue
+      // 借来的车道在 borrowWhen='exhausted' 下本来就不参战，等它等于等错对象。
+      if (row.borrowed === true && config.peerShare?.borrowWhen !== 'always') continue
+      const status = health.stateOf(row.provider, row.model)
+      const until = Number(status?.until ?? 0)
+      if (!Number.isFinite(until) || until <= now) continue
+      const delta = until - now
+      if (soonest === null || delta < soonest) soonest = delta
+    }
+    return soonest
+  }
+
+  /**
+   * 回合因渠道故障中断后，自动把这一轮续上（LOCAL PATCH 2026-11-16）。
+   *
+   * 为什么要有它：内核在 `agent/request-error` 没有返回 retry 时直接抛 LlmError，
+   * 回合以 `reason.kind='error'` 收场，界面弹「本轮运行失败」——**用户必须自己点一次
+   * 重试**。实测 11-10..11-16 有 38 个回合这样收场，其中 11 个发生在新会话的第一轮。
+   * 用户的原话是「失败后还得用户重试，不能自动」。
+   *
+   * 三条边界：
+   *  1. 只在回合边界做（`turn/end`）。中途插话会把一次对话切成两半。
+   *  2. 必须等 Agent 真的回到 idle 再 followup。落在一个仍在运行的 phase 上时
+   *     `send()` 只会把消息排进 next-turn 而**不会唤醒驱动**（`wakeDriver` 只在
+   *     maintenance 或 aborted 时置 wakeRequested），消息会一直躺在队列里——
+   *     这正是"看起来续跑了其实没动"的形状。
+   *  3. 有上限（`autoResumeMax`）：连续两次续跑都没能把这一轮做完，就停下来
+   *     告诉用户，而不是把同一个死循环刷成几十条消息。
+   */
+  function scheduleAutoResume(state, error) {
+    const config = runtime.config
+    if (config.autoResume === false) return
+    if (config.mode === 'off' || effectiveMode(state) === 'off') return
+    const failure = error ?? {}
+    const code = String(failure.code ?? 'UNKNOWN')
+    if (AUTO_RESUME_EXCLUDED.has(code)) return
+    const max = Math.max(0, Number(config.autoResumeMax ?? 2))
+    if (Number(state.resumeChain ?? 0) >= max) {
+      notify('模型调度：已停止自动续跑', '连续 ' + state.resumeChain + ' 次自动续跑都没能完成这一轮（最后一次：'
+        + code + '）。请手动重试，或在设置里换一条车道。')
+      health.logDecision({
+        kind: 'auto-resume-stop',
+        reason: '连续 ' + state.resumeChain + ' 次自动续跑后仍未完成（最后错误 ' + code + '）',
+        sessionId: state.agent.id,
+      }, runtime.config.decisionLogSize)
+      return
+    }
+    state.resumeChain = Number(state.resumeChain ?? 0) + 1
+    state.resumeAt = Date.now()
+    const chain = state.resumeChain
+    // 续跑延迟跟账本对齐：最早恢复的车道还要多久，就等多久（有上限）。
+    // 否则 1.5 秒后续跑只是把同一堵墙再撞一次，还会白白烧掉一次连击预算。
+    const base = Math.max(0, Number(config.autoResumeDelayMs ?? 1_500)) * chain
+    const soonest = soonestRecoveryMs(state, config)
+    const aligned = soonest === null ? 0 : Math.min(soonest + 400, Number(config.autoResumeWaitCapMs ?? 90_000))
+    const delay = Math.max(base, aligned)
+    const message = String(failure.message ?? '').replace(/\s+/g, ' ').slice(0, 180)
+    const text = '（模型调度自动续跑 ' + chain + '/' + max + '）上一轮在第 '
+      + Number(state.step >= 0 ? state.step : 0) + ' 步被渠道故障打断：' + code
+      + (message === '' ? '' : '（' + message + '）')
+      + '。已经自动换到其它可用车道，请**从断点继续**完成原任务：不要重述已经完成的部分，'
+      + '也不要重做已经成功的步骤；如果上一步的产出已经足够，直接收尾即可。'
+    // 覆盖前先清旧句柄（FIX 2026-11-16）：等待窗口最长 90 秒，窗口内用户重试或再次
+    // 以 error 收场都会再次走到这里；只赋值不清除时旧定时器照样到点执行，于是同一个
+    // 会话被插入第二条「模型调度自动续跑」消息，并重复消耗 resumeChain 预算。
+    if (state.resumeTimer !== null && state.resumeTimer !== undefined) clearTimeout(state.resumeTimer)
+    state.resumeTimer = setTimeout(() => {
+      state.resumeTimer = null
+      resumeNow(state, text, chain, code)
+    }, delay)
+    state.resumeTimer?.unref?.()
+  }
+
+  /** 等 Agent 空闲后把续跑消息交给它；一直忙（用户在说话）就放弃这一次。 */
+  async function resumeNow(state, text, chain, code) {
+    if (sessions.get(state.agent?.id) !== state) return
+    const agent = state.agent
+    if (agent === null || agent === undefined) return
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      if (sessions.get(agent.id) !== state) return
+      if (agent.status === 'idle') break
+      await sleep(250, null)
+    }
+    if (agent.status !== 'idle') {
+      // 用户自己又在说话了：这一次续跑就没有必要了，把预算还回去。
+      state.resumeChain = Math.max(0, Number(state.resumeChain ?? 1) - 1)
+      return
+    }
+    try {
+      agent.followup(userMessage({ text, kind: 'model-orchestrator-resume' }))
+    } catch (failure) {
+      state.resumeChain = Math.max(0, Number(state.resumeChain ?? 1) - 1)
+      ctx.logger?.warn?.('model-orchestrator: 自动续跑入队失败: '
+        + (failure instanceof Error ? failure.message : String(failure)))
+      return
+    }
+    if (chain === 1) {
+      notify('模型调度：已自动续跑', '上一轮因渠道故障中断（' + code + '），已自动换道并继续。')
+    }
+    health.logDecision({
+      kind: 'auto-resume',
+      reason: '第 ' + chain + '/' + Math.max(0, Number(runtime.config.autoResumeMax ?? 2))
+        + ' 次自动续跑（上一轮以 ' + code + ' 中断）',
+      sessionId: agent.id,
+    }, runtime.config.decisionLogSize)
   }
 
   function failureReason(verdict) {
@@ -1477,6 +1850,11 @@ export function apply(ctx, rawConfig = {}) {
   })
 
   ctx.on('agent/disposed', ({ agent }) => {
+    const state = sessions.get(agent.id)
+    if (state?.resumeTimer !== null && state?.resumeTimer !== undefined) {
+      clearTimeout(state.resumeTimer)
+      state.resumeTimer = null
+    }
     sessions.delete(agent.id)
   })
 
@@ -1491,20 +1869,41 @@ export function apply(ctx, rawConfig = {}) {
       state.turnSwitches = 0
       state.familyRetries = new Set()
       state.stepFailedFamilies = new Set()
+      // 死车道的记忆只在一个回合内有效：给下个回合（以及自动续跑）一个干净的
+      // 候选池，否则一条车道一次抖动会把它钉死整个会话。冷却账本才是跨回合的判据。
+      state.turnDeadLanes = new Set()
+      state.stepDeadLanes = new Set()
+      state.turnProduced = false
+      state.extraSwitches = 0
+      state.lastResortUsed = 0
       return
     }
     if (event.type === 'turn/end') {
       // A turn is the safe point to hand the model back: the conversation is
       // complete, so a switch now cannot split one exchange across two models.
       restoreUserChoice(state)
+      const reason = event.data?.reason
+      if (reason?.kind === 'completed' || reason?.kind === 'max-tokens') {
+        // 走到这里说明调度器把一次危机救回来了：连击清零，下次中断重新给满预算。
+        state.resumeChain = 0
+      } else if (reason?.kind === 'error') {
+        scheduleAutoResume(state, reason.error)
+      }
       return
     }
     if (event.type === 'step/start') {
       state.step = Number(event.data?.step ?? -1)
       state.stepSwitches = 0
+      state.lastResortUsed = 0
+      state.extraSwitches = 0
+      state.stepDeadLanes = new Set()
       // 同家族只在每个 step 里重试一次（LOCAL PATCH 2026-11-14，见 recover）。
       state.familyRetries = new Set()
       state.stepFailedFamilies = new Set()
+      return
+    }
+    if (event.type === 'assistant/message') {
+      state.turnProduced = true
       return
     }
     if (event.type === 'model/selection') {
@@ -1593,11 +1992,33 @@ export function apply(ctx, rawConfig = {}) {
 
   // Failure recovery: cool the lane, retry the same model on another channel,
   // and only then change model — all inside the same step.
+  // 重试预算归属（LOCAL PATCH 2026-11-16）。
+  //
+  // 内核的 `llm-retry` 与这个插件都挂在 `agent/request-error` 瀑布上，**谁先注册谁先
+  // 说话**。实测的证据形状：一个步骤里同一条车道被撞 15~22 次，而调度器的换道预算只有
+  // 3 次——因为 llm-retry 先把它能重试的码（TRANSPORT/TIMEOUT/SERVER/RATE_LIMIT/
+  // EMPTY_RESPONSE）自己吞掉 5 次（0.5s→10s 退避），调度器要到第 6 次才看得见。
+  //
+  // `prepend` 让调度器抢在前面：车道级故障立刻换道（`{kind:'retry'}` 不再往下传），
+  // 只有"换不了"的时候才把控制权交回内核，让它去做同车道的退避重试。
+  // 关掉 `ownRetryBudget` 即恢复旧行为（内核优先）。
   ctx.on('agent/request-error', (payload, next) => {
-    const state = sessions.get(payload.agent.id)
+    const state = sessions.get(payload.agent?.id)
     if (state === undefined) return next()
-    return recover(state, payload, next).catch(() => undefined)
-  })
+    let forwarded = false
+    const forward = () => {
+      forwarded = true
+      return next()
+    }
+    return recover(state, payload, forward).catch((error) => {
+      // 恢复逻辑自己出问题绝不能成为"回合失败"的理由：能交回内核就交回。
+      try {
+        ctx.logger?.warn?.('model-orchestrator: 失败恢复出错，交回内核: '
+          + (error instanceof Error ? error.message : String(error)))
+      } catch { /* 日志不重要 */ }
+      return forwarded ? undefined : forward()
+    })
+  }, runtime.config.ownRetryBudget === true ? { prepend: true } : undefined)
 
   // Passive measurement of every call that actually goes out.
   ctx.on('llm/stream', (options, next) => observer.observe(options, next()))

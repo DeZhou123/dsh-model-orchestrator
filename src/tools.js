@@ -109,7 +109,11 @@ export function registerAgentSurface(options) {
             const patch = {}
             for (const key of ['mode', 'strategy', 'preferModel', 'preferProvider', 'preferFallback',
               'turnTokenBudget', 'deny', 'allow', 'denyProviders', 'reasoningEffort', 'routeFirstTurn', 'autoSelect',
-              'sameKindEscalation', 'staleLatencyMode', 'peerShare']) {
+              'sameKindEscalation', 'staleLatencyMode', 'peerShare',
+              // 2026-11-16 失败恢复三件套：自动续跑太吵、最后一搏等太久时，
+              // 用户要能当场把它们关掉，而不是去改 profile patch 再重启。
+              'ownRetryBudget', 'lastResortPerStep', 'lastResortWaitMs',
+              'autoResume', 'autoResumeMax', 'autoResumeDelayMs', 'autoResumeWaitCapMs']) {
               if (args?.[key] !== undefined) patch[key] = args[key]
             }
             if (Object.keys(patch).length === 0) return { ok: false, error: 'set 需要至少一个要修改的字段' }

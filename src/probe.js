@@ -55,14 +55,30 @@ export function resolveIntervalMs(config = {}) {
  * @param {number} input.now
  * @returns {{skip: boolean, reason: string}}
  */
+/**
+ * 判定类别里哪些属于「外部状态」。
+ *
+ * auth 凭据、plan 套餐、region 地区、quota 账单这几件事随时可能被人改好（重新登录、
+ * 开通套餐、换节点、充值），它们的冷却期与「现在到底行不行」没有因果关系。
+ * rate/transient/slow 是渠道对**当前这个瞬间**的反应，冷却本身才是有意义的证据。
+ */
+const RECHECKABLE_STATUS = new Set(['auth', 'plan', 'region', 'quota', 'unavailable'])
+
 export function shouldSkip(input) {
   const state = input.state
-  if (state !== null && state !== undefined && state.available === false) {
-    const until = Number(state.until ?? 0)
-    // 冷却未到期 → 跳。到期了反而必须探：那正是"它到底恢复了没有"的答案。
-    if (until > input.now) return { skip: true, reason: '冷却中：' + String(state.reason ?? '') }
+  if (state === null || state === undefined || state.available !== false) {
+    return { skip: false, reason: '', recheck: false }
   }
-  return { skip: false, reason: '' }
+  const until = Number(state.until ?? 0)
+  // 冷却到期了必须探：那正是"它到底恢复了没有"的答案。
+  if (!(until > input.now)) return { skip: false, reason: '', recheck: false }
+  // 冷却未到期：默认跳（探了大概率白烧额度），但外部状态类判定允许按期复核一次
+  // ——否则一条凭据修好的渠道会一直停到冷却自然到期（2026-11-16 实测等了 30 分钟）。
+  const recheckAt = Number(input.recheckAt ?? 0)
+  if (recheckAt > 0 && recheckAt <= input.now && RECHECKABLE_STATUS.has(String(state.status ?? ''))) {
+    return { skip: false, reason: '复核外部状态：' + String(state.reason ?? ''), recheck: true }
+  }
+  return { skip: true, reason: '冷却中：' + String(state.reason ?? ''), recheck: false }
 }
 
 /**
@@ -121,6 +137,8 @@ export function createProbe(options) {
     running: false,
     nextAt: 0,
     rounds: Number(options.initialState?.rounds ?? 0),
+    /** provider -> 上次复核时刻；一条渠道在复核间隔内只探一个代表模型。 */
+    rechecksAt: { ...(options.initialState?.rechecksAt ?? {}) },
   }
 
   /** 一条 lane 的探测：包超时，任何异常都收敛成 {ok:false}。 */
@@ -180,6 +198,9 @@ export function createProbe(options) {
       return { skipped: true, reason: '列举车道失败', startedAt }
     }
 
+    const rawRecheck = Number(config.probeRecheckMs)
+    const recheckMs = Number.isFinite(rawRecheck) && rawRecheck > 0 ? rawRecheck : 0
+
     const targets = []
     for (const lane of Array.isArray(lanes) ? lanes : []) {
       if (lane === null || lane === undefined) continue
@@ -192,12 +213,22 @@ export function createProbe(options) {
       } catch {
         stateForLane = null
       }
-      const verdict = shouldSkip({ lane, state: stateForLane, now: startedAt })
+      // 外部状态类冷却：按期放行**一个**代表模型去复核。第一条命中后立刻记账，
+      // 同渠道后续几百条模型在间隔内都会被算成「已复核过」而跳过。
+      const providerKey = provider.toLowerCase()
+      let recheckAt = 0
+      if (recheckMs > 0 && stateForLane !== null && stateForLane.available === false
+        && RECHECKABLE_STATUS.has(String(stateForLane.status ?? ''))) {
+        const last = Number(state.rechecksAt[providerKey] ?? 0)
+        if (!(last > 0) || startedAt - last >= recheckMs) recheckAt = startedAt
+      }
+      const verdict = shouldSkip({ lane, state: stateForLane, now: startedAt, recheckAt })
       if (verdict.skip) {
         targets.push({ lane, skip: true, reason: verdict.reason })
         continue
       }
-      targets.push({ lane, skip: false, reason: '' })
+      if (verdict.recheck === true) state.rechecksAt[providerKey] = startedAt
+      targets.push({ lane, skip: false, reason: verdict.reason, recheck: verdict.recheck === true })
     }
 
     const runnable = targets.filter(entry => entry.skip === false).map(entry => entry.lane)
@@ -254,6 +285,7 @@ export function createProbe(options) {
       durationMs: state.lastDurationMs,
       total: all.length,
       probed: results.length,
+      rechecked: targets.filter(entry => entry.recheck === true).length,
       ok: results.filter(row => row.ok).length,
       failed: results.filter(row => row.ok === false).length,
       skipped: skipped.length,

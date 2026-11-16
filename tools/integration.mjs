@@ -545,6 +545,65 @@ console.log('\n[10] 全部模型清单接口（偏好选择器用）')
   check('the configured preference is reported', typeof all.body.configured, 'string')
 }
 
+console.log('\n[12] 失败恢复：死车道不再被选回 / 回合中断自动续跑（2026-11-16）')
+{
+  // 这一段必须放在巡检（[8b] 会真的探所有车道、把账本写成"全在冷却"）之前，
+  // 否则它测的就不是恢复逻辑，而是"目录全灭时确实没法恢复"。
+  await tools.get('model_orchestrator').execute({ action: 'set', mode: 'auto' })
+  // 续跑延迟在测试里必须缩短：真实默认值会按账本对齐到几十秒。
+  await tools.get('model_orchestrator').execute({ action: 'set', autoResumeDelayMs: 120, autoResumeWaitCapMs: 120 })
+  const resumed = []
+  const recSession = createSession('s-recover', undefined)
+  const recAgent = {
+    id: 's-recover',
+    session: recSession,
+    status: 'idle',
+    followup(message) { resumed.push(message) },
+  }
+  const recRef = makeSelection('trae', 'mimo-v2.6-pro')
+  sessions.set('s-recover', { ref: recRef, session: recSession })
+  fire('agent/created', { agent: recAgent })
+  recSession.append('turn/start', { turn: 1 })
+  recSession.append('step/start', { turn: 1, step: 1 })
+  await fire('system-prompt/assemble', { variables: {} }, { agent: recAgent }, () => Promise.resolve({ variables: {} }))
+
+  // 一条车道失败一次之后，这一步里就再也不能被选回来（旧代码只排除"刚刚那一条"，
+  // 于是 A→B→A→B 在两条死车道之间来回，实测一个步骤撞 10~22 次）。
+  const tried = [{ provider: recRef._picked.provider, model: recRef._picked.model }]
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const current = tried[tried.length - 1]
+    const action = await fire('agent/request-error', {
+      agent: recAgent,
+      provider: current.provider,
+      failure: { code: 'QUOTA_EXCEEDED', message: '模型额度已用尽，请改用其它模型' },
+      signal: new AbortController().signal,
+    }, () => Promise.resolve(undefined))
+    if (action === undefined || action.kind !== 'retry') break
+    const next = { provider: recRef._picked.provider, model: recRef._picked.model }
+    checkThat('第 ' + (attempt + 1) + ' 次换道没有回到已经失败过的车道',
+      !tried.some(lane => lane.provider === next.provider && lane.model === next.model),
+      next.provider + '/' + next.model)
+    tried.push(next)
+  }
+  checkThat('死车道在一个步骤里只被撞一次', tried.length >= 2, JSON.stringify(tried))
+
+  // 回合以 error 收场时，调度器替用户按下那次重试（旧行为是弹「本轮运行失败」，
+  // 然后等人自己点）。
+  recSession.append('turn/end', {
+    turn: 1,
+    reason: { kind: 'error', error: { code: 'TRANSPORT', message: 'fetch failed' } },
+  })
+  for (let index = 0; index < 40 && resumed.length === 0; index += 1) {
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  checkThat('回合中断后自动续跑了一次', resumed.length === 1, String(resumed.length))
+  const resumedText = String(resumed[0]?.content?.[0]?.text ?? '')
+  checkThat('续跑消息说明了中断原因与续跑次数',
+    resumedText.includes('TRANSPORT') && resumedText.includes('1/2'), resumedText.slice(0, 64))
+  checkThat('续跑消息的来源可辨认（不是伪装成用户发言）',
+    resumed[0]?.source?.kind === 'model-orchestrator-resume', String(resumed[0]?.source?.kind))
+}
+
 console.log('\n[8b] 巡检路由：读状态免费，跑一轮是显式动作')
 {
   const probeRoute = routes.get('/api/model-orchestrator/probe')
@@ -639,5 +698,7 @@ console.log('\n[9] 偏好暂停的自愈：不再等「下一次路由」')
     JSON.stringify(pausedAgain.preference?.group?.lanes ?? null).slice(0, 120))
 }
 
+
 console.log('\n' + (failures === 0 ? 'PASS' : 'FAIL') + ' — ' + (checks - failures) + '/' + checks)
 if (failures > 0) process.exitCode = 1
+

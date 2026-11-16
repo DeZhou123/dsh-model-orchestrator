@@ -810,8 +810,12 @@ export function createHealth(options = {}) {
       // act on, keeps choosing that lane, and every turn routed there dies
       // without a failover (LOCAL PATCH 2026-10-18; see REQUEST_REPEAT).
       const policy = requestPolicy()
-      const windowMs = Math.max(60_000, Number(policy.requestRepeatWindowMs) || REQUEST_REPEAT.windowMs)
-      const threshold = Math.max(1, Math.round(Number(policy.requestRepeatThreshold) || REQUEST_REPEAT.threshold))
+      const windowMs = Number.isFinite(Number(policy.requestRepeatWindowMs))
+        ? Math.max(60_000, Math.round(Number(policy.requestRepeatWindowMs)))
+        : REQUEST_REPEAT.windowMs
+      const threshold = Number.isFinite(Number(policy.requestRepeatThreshold))
+        ? Math.max(1, Math.round(Number(policy.requestRepeatThreshold)))
+        : REQUEST_REPEAT.threshold
       const repeats = record.rejectsAt > 0 && now - record.rejectsAt <= windowMs
         ? Number(record.rejects ?? 0) + 1
         : 1
@@ -826,7 +830,12 @@ export function createHealth(options = {}) {
       // model for a bounded while (no strike: this is a refusal pattern, not
       // proof the lane is broken) so the next step, and the next turn, route
       // somewhere else instead of hitting the same wall.
-      const blockMs = Math.max(0, Number(policy.requestRepeatBlockMs) || REQUEST_REPEAT.blockMs)
+      // 「显式写下的 0」与「没写」必须分开（FIX 2026-11-16）：README 承诺
+      // requestRepeatBlockMs: 0 = 只换渠道、不暂停，而 Number(x) || fallback 把合法的
+      // 0 当 falsy，于是用户设了 0 仍然被停 30 分钟——配置面在说谎。
+      const blockMs = Number.isFinite(Number(policy.requestRepeatBlockMs))
+        ? Math.max(0, Math.round(Number(policy.requestRepeatBlockMs)))
+        : REQUEST_REPEAT.blockMs
       record.rejects = 0
       record.status = KIND.REQUEST
       record.reason = '连续 ' + repeats + ' 次请求被该渠道拒绝：' + verdict.reason

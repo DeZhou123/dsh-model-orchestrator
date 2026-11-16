@@ -348,10 +348,67 @@ export const DEFAULT_CONFIG = {
    * `patchPath` is its profile patch (what it would dispatch on boot).
    */
   duoPeers: [],
-  /** Maximum automatic route changes inside one step before giving up. */
-  maxSwitchesPerStep: 3,
+  /**
+   * Maximum automatic route changes inside one step before giving up.
+   *
+   * LOCAL PATCH 2026-11-16: 3 was too tight for the free-lane catalog. 实测
+   * 11-10..11-16 的 134 个会话里，38 个回合以 error 收场，其中 13 个回合在
+   * **一个步骤**里撞了 10~22 次失败——偏好家族 deepseek-v4.1-flash 挂着 16 条
+   * 同名车道，其中十几条同时是「未登录 / 未订阅 / 被安全拦截」的死路，3 次换道
+   * 根本走不到一条活车道。5 次仍然有界，但足够穿过一整片死路。
+   */
+  maxSwitchesPerStep: 5,
+  /** 预算外的「宁可换也不要死」余量（原 index.js 的硬编码 EXTRA_SWITCHES = 2）。 */
+  switchOverdraft: 2,
   /** Maximum automatic route changes inside one turn. */
-  maxSwitchesPerTurn: 12,
+  maxSwitchesPerTurn: 16,
+  /**
+   * 由调度器而不是内核掌管重试预算（LOCAL PATCH 2026-11-16）。
+   *
+   * 事实：内核的 `llm-retry` 对 TRANSPORT/TIMEOUT/SERVER/RATE_LIMIT/EMPTY_RESPONSE
+   * 有独立的 5 次同车道重试，而它注册在 `agent/request-error` 瀑布里；只要它先跑，
+   * 一次失败就会被它吞掉 5 次（0.5s→10s 退避），调度器要到第 6 次才看得见——
+   * 于是「同一条死车道重试 15~22 次」和「首轮必失败」同时成立。
+   * 打开后调度器抢先接管：车道级故障立刻换道，瞬时故障才放给内核退避。
+   * 关掉恢复旧行为（内核优先）。
+   */
+  ownRetryBudget: true,
+  /**
+   * 一个步骤内允许的「最后一搏」：所有车道都在冷却、或换道预算用尽时，
+   * 不直接把回合判死，而是挑最早恢复的那条车道、等它的冷却结束再试一次。
+   * 这是「运行一段时间后失败了，还得用户重置」的直接解药——那时账本里通常
+   * 只剩冷却中的车道，旧代码返回 null ⇒ 裸错误 ⇒ 回合失败。
+   */
+  lastResortPerStep: 1,
+  /**
+   * 最后一搏最多愿意等多久（毫秒）；超过就放弃，交给回合级自动续跑。
+   *
+   * 20 秒是"界面看起来还在干活"的上限：瞬时冷却的基础值是 30 秒，等它的收益
+   * 明确（等回来就能继续），但每一步都静默 30 秒以上会被当成卡死。更长的等待
+   * 挪到回合边界去做——那里有自动续跑，而且用户能看见那条说明。
+   */
+  lastResortWaitMs: 20_000,
+  /**
+   * 回合因车道故障中断后自动续跑（LOCAL PATCH 2026-11-16）。
+   *
+   * 旧行为：turn 以 error 结束时内核直接抛 LlmError，界面弹「本轮运行失败」，
+   * 用户必须自己点重试。打开后调度器在回合边界替用户按下那次重试——用一条
+   * 明确的 user 消息续上原任务，并在消息里说明为什么中断。
+   */
+  autoResume: true,
+  /** 同一条失败链上最多自动续跑几次（成功完成一个回合即归零）。 */
+  autoResumeMax: 2,
+  /** 第一次续跑前的停顿：给冷却中的车道一点恢复时间，也避免空转。 */
+  autoResumeDelayMs: 1_500,
+  /**
+   * 自动续跑的等待上限（毫秒）。
+   *
+   * 续跑的时机应该跟账本对齐：如果最早恢复的车道还要 40 秒才回来，1.5 秒后就
+   * 续跑等于立刻再撞一次同一堵墙。所以续跑延迟 = max(基础延迟，min(最早恢复时间, 上限))。
+   * 上限存在的理由：凭据/订阅类停车是小时级的，等满没有意义，那时应该让用户看见
+   * 一条明确的错误，而不是把回合挂在这里。
+   */
+  autoResumeWaitCapMs: 90_000,
   /** Switch away from a cooling model instead of waiting for it. */
   proactiveSwitch: true,
   /** After a failure, prefer a model at least as intelligent as the failed one. */
@@ -497,6 +554,37 @@ export const DEFAULT_CONFIG = {
    * 探活是「本机车道会不会静默死亡」的补丁，不是替对侧体检的工具。
    */
   probeBorrowed: false,
+  /**
+   * 冷却中的车道多久复核一次（LOCAL PATCH 2026-11-16）。
+   *
+   * 起因是一个真实事故：free-pi 在重启探测时用了占位 token，401 被判成 lane 级
+   * AUTH，整条渠道停车 30 分钟。凭据在 5 分钟内就修好了，但 `shouldSkip` 认为
+   * 「冷却未到期 = 探了也白探」，于是**没有任何一次探测去发现它已经好了**，
+   * 活活等满 30 分钟。
+   *
+   * 判据错在把「外部状态」当成「自身状态」：AUTH / PLAN / REGION / QUOTA 这四类
+   * 是账号、套餐、地区、账单的事，人在任何时刻都能改好，冷却期长短与它无关。
+   * 所以这类判定允许按期复核：每条渠道每轮**只复核一个代表模型**（不是整渠道
+   * 几百条一起探），成功后 markSuccess 会顺手解除整条车道的停车。
+   *
+   * 给 0 关闭复核，回到旧行为。
+   */
+  probeRecheckMs: 5 * 60_000,
+  /**
+   * 免费车道的显式加分（LOCAL PATCH 2026-11-16）。
+   *
+   * 为什么不能只靠 cost 项：cost = 1 / (1 + burn) 在 burn 很小时**饱和**。
+   * 实测 free-pi（burn 0.0066）与 buddy（burn 0.0374）的 cost 读数差 0.0296，
+   * 乘 economy 的 0.30 权重只有 0.009 效用——「免费」与「打一七折」在评分上几乎
+   * 同一件事，于是 economy 策略并不真的省钱，只是碰巧顺序对。
+   *
+   * 所以把「免费」当成一个**离散事实**加分，而不是靠连续函数的尾巴：无限额度档
+   * 拿满额加分，免费但有上限的渠道拿六成。它是加在 baseUtility 之后的独立项
+   * （与 anchor 同一位置），不改动原有的五个读数。
+   *
+   * 给 0 关闭，回到只靠 cost 项的老行为。
+   */
+  freeLaneBonus: 0.05,
   /** Load the priority report from this path on start; empty disables it. */
   reportPath: '',
   /**

@@ -23,10 +23,10 @@ import {
   chooseEffort, DENY_REASON_PREFIX, evaluate, explainExhausted, latencyFor, preferenceConflicts,
   rankGroups, rankLanes, readNeeds, resolvePreferenceGroup, scoreLane, selectRoute,
 } from '../src/router.js'
-import { resolveConfig, sanitizePatch } from '../src/config.js'
+import { resolveConfig, sanitizePatch, STRATEGIES } from '../src/config.js'
 import { createInflight } from '../src/inflight.js'
 import { datasetFromReport } from '../src/report-import.js'
-import { COOLDOWN, DEFAULT_CONFIG, ESCALATION } from '../src/policy-defaults.js'
+import { COOLDOWN, DEFAULT_CONFIG, ESCALATION, STRATEGIES as STRATEGY_TABLE } from '../src/policy-defaults.js'
 import { foldCandidates, foldKey, NON_INTERACTIVE_SUFFIX } from '../src/families.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -72,7 +72,9 @@ check('prefer without a model degrades to auto', resolveConfig({ mode: 'prefer',
 check('invalid mode keeps the default', resolveConfig({ mode: 'turbo' }, {}).mode, 'auto')
 const legacyPin = resolveConfig({ pinProvider: 'buddy', pinModel: 'glm-5.3' }, {})
 check('legacy pin becomes a preference', [legacyPin.mode, legacyPin.preferModel, legacyPin.preferProvider], ['prefer', 'glm-5.3', 'buddy'])
-check('maxSwitchesPerStep is clamped', resolveConfig({ maxSwitchesPerStep: 99 }, {}).maxSwitchesPerStep, 10)
+// clamp 上限 2026-11-16 由 10 提到 30（并把超额余量 switchOverdraft 变成配置键）：
+// 旧上限会让用户填的 20 静默变成 12。
+check('maxSwitchesPerStep is clamped', resolveConfig({ maxSwitchesPerStep: 99 }, {}).maxSwitchesPerStep, 30)
 check('unknown patch keys are dropped', sanitizePatch({ mode: 'off', nope: 1 }), { mode: 'off' })
 
 console.log('\n[2] model identity and the priority prior')
@@ -1183,6 +1185,185 @@ console.log('\n[15] 2026-11-14 事故回归：错误分类 / 连败升级 / 陈�
     && preferParked?.stepFallback !== undefined
     && preferParked?.exhausted === undefined,
     JSON.stringify([preferParked?.family ?? null, preferParked?.stepFallback?.reason ?? null]))
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('\n[18] 2026-11-16 P0 批次回归：vision 回退不复活被掩码的车道 / 配置面不说谎')
+
+{
+  // ── 18.1 vision 回退必须保留 familyParked 与 borrowed 掩码 ────────────────
+  //
+  // 旧写法在两道掩码之后再调 all = inspectAll(true)，而 inspectAll 是 rows.map 的闭包
+  // —— 整表从原始 rows 重建，掩码全部丢失。本块构造的正是那一刻：local-v 被本步骤
+  // 停掉、请求要图片（needs.vision），于是必然走 vision 回退。
+  const config = resolveConfig({}, {})
+  // borrowUsable 由 index.js 注入（借用适配器是否拿到清单）；这里显式给 true，
+  // 否则 peer 闸门整段跳过（peer.borrowUsable === false 分支在前）。
+  config.peerShare = { ...DEFAULT_CONFIG.peerShare, enabled: true, borrowWhen: 'exhausted', borrowUsable: true }
+  const health = createHealth({ userDir: null, clock })
+  const visionLane = lane('trae', 'kimi-k3', { family: 'f-vision', vision: true, intel: 44, quality: 0.95 })
+  const textLane = lane('buddy', 'glm-5.3', { family: 'f-text', vision: false, quality: 0.6 })
+  const borrowedLane = lane('peer', 'borrowed-vision', { family: 'f-borrowed', vision: true, intel: 46, quality: 0.99, borrowed: true })
+  const rows = [visionLane, textLane, borrowedLane]
+  // 组合刻意选成这样，让 vision 回退**必然发生**、且借入车道的掩码来自另一条判据：
+  //   1) 请求要图片，本机唯一支持视觉的车道所属家族被本步骤停掉，剩下的本机车道不支持图片
+  //      → 本机再没有「有资格且支持视觉」的车道 → 走 vision 回退；
+  //   2) 借入车道被「端点不可达」掩掉（borrowUsable: false）。
+  // 旧代码在这一步重建整表，把第 2 条掩码丢掉：借入车道复活并被选中（旧行为可复现）。
+  const needs = readNeeds({ hasImage: true }, config)
+  const excludeFamilies = new Set([foldKey('f-vision')])
+  const deadPeerConfig = {
+    ...config,
+    peerShare: { ...config.peerShare, enabled: true, borrowWhen: 'exhausted', borrowUsable: false },
+  }
+
+  const selected = selectRoute({ rows, health, config: deadPeerConfig, anchor: null, needs, mode: 'auto', excludeFamilies })
+  checkThat('端点不可达 + vision 回退叠加时，借入车道仍然不参战',
+    selected === null || selected.provider !== 'peer',
+    JSON.stringify([selected?.provider ?? null, selected?.model ?? null]))
+
+  const evaluation = evaluate({ rows, health, config: deadPeerConfig, anchor: null, needs, mode: 'auto', excludeFamilies })
+  checkThat('vision 回退真的发生了（前置条件，否则这一组测的不是回退）',
+    evaluation.visionFallback === true, String(evaluation.visionFallback))
+  // 语义（本节的重点）：家族停车与借入闸门是**策略**，vision 回退是**能力**。
+  // 被策略挡掉的条目不能被回退复活；而「因为要图片才被判掉」的本机文本车道可以顶上，
+  // 并在打分里吃 fallbackPenalty。
+  check('被策略挡掉的两条仍在评估面里为 ineligible，本机文本车道顶上',
+    evaluation.lanes.map(item => item.row.provider).join(','), 'buddy')
+  checkThat('被家族停车的视觉车道没有借回退复活',
+    evaluation.all.find(item => item.row.family === 'f-vision')?.inspection?.familyParked === true,
+    JSON.stringify(evaluation.all.find(item => item.row.family === 'f-vision')?.inspection ?? null))
+  checkThat('借入车道没有借回退复活',
+    evaluation.all.find(item => item.row.provider === 'peer')?.inspection?.borrowedIdle === true,
+    JSON.stringify(evaluation.all.find(item => item.row.provider === 'peer')?.inspection ?? null))
+  // 补一个「确实有车道顶上」的对照：本机只有一条不支持图片的车道，借入车道被端点掩掉，
+  // 此时 vision 回退必须让文本车道顶一下，而不是整步判死。
+  const textOnly = evaluate({
+    rows: [textLane, borrowedLane],
+    health,
+    config: deadPeerConfig,
+    anchor: null,
+    needs,
+    mode: 'auto',
+  })
+  checkThat('没有视觉车道时，vision 回退让文本车道顶上',
+    textOnly.visionFallback === true && textOnly.lanes.map(item => item.row.provider).join(',') === 'buddy',
+    JSON.stringify([textOnly.visionFallback, textOnly.lanes.map(item => item.row.provider)]))
+  checkThat('借入车道在这种场景下仍然被端点掩码挡在外面',
+    textOnly.all.find(item => item.row.provider === 'peer')?.inspection?.borrowedIdle === true,
+    JSON.stringify(textOnly.all.find(item => item.row.provider === 'peer')?.inspection ?? null))
+  const familyEntry = evaluation.all.find(item => item.row.family === 'f-vision')
+  checkThat('vision 回退不会复活被家族停车的车道',
+    familyEntry?.inspection?.eligible === false && familyEntry?.inspection?.familyParked === true,
+    JSON.stringify(familyEntry?.inspection ?? null).slice(0, 90))
+  const borrowedEntry = evaluation.all.find(item => item.row.provider === 'peer')
+  checkThat('vision 回退不会让借入车道从「被掩码」变成「合格」',
+    borrowedEntry?.inspection?.borrowedIdle === true && borrowedEntry?.inspection?.eligible === false,
+    JSON.stringify(borrowedEntry?.inspection ?? null).slice(0, 90))
+  // 结构断言（精确版）：在 evaluate() 的函数体里，inspectAll 只允许被调用一次，
+  // 且不带 true。那条「带 true 的整表重建」正是掩码被抹掉的原因，且它无法被行为用例
+  // 完整覆盖（是否触发取决于目录构成），所以在这里钉住。
+  const routerSource = fs.readFileSync(path.resolve(HERE, '..', 'src', 'router.js'), 'utf8')
+  const evaluateBody = routerSource.slice(
+    routerSource.indexOf('export function evaluate(input)'),
+    routerSource.indexOf('export function selectRoute('))
+  // 只数「真调用」：先去掉注释行（那段历史注释里原样保留了旧写法，否则会自伤），
+  // 再数 '= inspectAll('（构造器定义是 '=> rows.map'，不会命中）。
+  const codeOnly = evaluateBody.split('\n')
+    .filter(line => {
+      const trimmed = line.trim()
+      return !trimmed.startsWith('//') && !trimmed.startsWith('*') && !trimmed.startsWith('/*')
+    })
+    .join('\n')
+  const callCount = (codeOnly.match(/= inspectAll\(/g) ?? []).length
+  checkThat('evaluate 里不再有「整表重建」形式的第二次调用',
+    !codeOnly.includes('inspectAll(true)') && callCount === 1,
+    'inspectAll 调用 ' + callCount + ' 次')
+
+  // 无歧义前提：本机有一条显而易见的活车道，借入车道的 utility 刻意更高。
+  const plainRows = [
+    lane('trae', 'kimi-k3', { family: 'f-vision', vision: true, intel: 44, quality: 0.6 }),
+    lane('peer', 'borrowed-vision', { family: 'f-borrowed', vision: true, intel: 46, quality: 0.99, borrowed: true }),
+  ]
+  const plain = selectRoute({ rows: plainRows, health, config, anchor: null, needs, mode: 'auto' })
+  checkThat('本机有活车道时借入车道不参战（即使它分数更高）',
+    plain?.provider === 'trae', JSON.stringify([plain?.provider ?? null, plain?.model ?? null]))
+  const plainEval = evaluate({ rows: plainRows, health, config, anchor: null, needs, mode: 'auto' })
+  const plainBorrowed = plainEval.all.find(item => item.row.provider === 'peer')
+  checkThat('被掩码的借入车道在评估面里是 ineligible 且带 borrowedIdle',
+    plainBorrowed?.inspection?.eligible === false && plainBorrowed?.inspection?.borrowedIdle === true,
+    JSON.stringify(plainBorrowed?.inspection ?? null).slice(0, 90))
+
+  // 兜底语义没有被锁死：本机真的没有合格候选时，借入车道必须能参战。
+  const peerOnly = selectRoute({ rows: [borrowedLane], health, config, anchor: null, needs, mode: 'auto' })
+  check('本机真的没有候选时借入车道才参战', peerOnly?.provider, 'peer')
+
+  // ── 18.2 显式写下的 0 必须生效（README 承诺 requestRepeatBlockMs: 0 = 不暂停）──
+  const zeroConfig = resolveConfig({ requestRepeatBlockMs: 0 }, {})
+  check('requestRepeatBlockMs 的 0 被保留', zeroConfig.requestRepeatBlockMs, 0)
+  // requestPolicy 是 createHealth 的**选项**（index.js:232 这样传），不是 markFailure 的 meta。
+  const rh = createHealth({
+    userDir: null,
+    clock,
+    requestPolicy: () => zeroConfig,
+    sameKindEscalation: false,
+  })
+  for (let index = 0; index < 2; index += 1) {
+    rh.markFailure('buddy', 'glm-5.3', { code: 'INVALID_REQUEST', message: 'request shape is wrong' })
+  }
+  const blocked = rh.stateOf('buddy', 'glm-5.3')
+  check('0 表示只换渠道不暂停', blocked.until, 0)
+  checkThat('0 时车道仍然可用（连续被拒只换渠道，不暂停）',
+    blocked.available === true && String(blocked.reason ?? '') === '',
+    JSON.stringify([blocked.status, blocked.available]))
+  // 正例：默认值（30 分钟）下同一个动作确实会停车——否则上一条可能只是"什么都没做"。
+  const defHealth = createHealth({ userDir: null, clock, requestPolicy: () => resolveConfig({}, {}) })
+  for (let index = 0; index < 2; index += 1) {
+    defHealth.markFailure('buddy', 'glm-5.3', { code: 'INVALID_REQUEST', message: 'request shape is wrong' })
+  }
+  const parked = defHealth.stateOf('buddy', 'glm-5.3')
+  checkThat('默认值下同一个动作会停车（正例，证明上一条不是因为没生效）',
+    parked.available === false && parked.until - NOW > 60_000,
+    JSON.stringify([parked.status, parked.until - NOW]))
+
+  // 反证：默认值仍然是 30 分钟级的停车，删掉 0 分支就会退化成「永不暂停」。
+  const defRepeat = resolveConfig({}, {})
+  check('默认 blockMs 不动', defRepeat.requestRepeatBlockMs, DEFAULT_CONFIG.requestRepeatBlockMs)
+
+  // ── 18.3 换道预算进配置面，clamp 不再静默截断 ─────────────────────────────
+  check('switchOverdraft 有默认值', resolveConfig({}, {}).switchOverdraft, DEFAULT_CONFIG.switchOverdraft)
+  check('用户可以改大超额余量', resolveConfig({ switchOverdraft: 4 }, {}).switchOverdraft, 4)
+  check('maxSwitchesPerStep 不再被截到 10', resolveConfig({ maxSwitchesPerStep: 20 }, {}).maxSwitchesPerStep, 20)
+  check('maxSwitchesPerStep 仍有上限', resolveConfig({ maxSwitchesPerStep: 999 }, {}).maxSwitchesPerStep, 30)
+
+  // ── 18.4 策略白名单与打分表同源 ───────────────────────────────────────────
+  check('白名单就是 STRATEGIES 的键', STRATEGIES, Object.keys(STRATEGY_TABLE))
+  checkThat('新增策略不会被 config 静默拒掉',
+    Object.keys(STRATEGY_TABLE).every(id => resolveConfig({ strategy: id }, {}).strategy === id),
+    JSON.stringify(Object.keys(STRATEGY_TABLE)))
+
+  // ── 18.5 inflight 的 staleMs 必须惰性读取 ─────────────────────────────────
+  //
+  // 旧写法在构造时快照一次，于是 concurrencyStaleMs 虽然能改、面板也放它改，
+  // 运行期改动毫无效果（只有重启生效），面板还不提示。
+  let fakeNow = NOW
+  let staleOverride = 600_000
+  const reactive = createInflight({ clock: () => fakeNow, staleMs: () => staleOverride })
+  const liveLease = reactive.begin('buddy', 'glm-5.3')
+  check('刚开的租约在窗口内', reactive.of('buddy', 'glm-5.3'), 1)
+  // 窗口内但超过 1 秒：旧写法会把 1 秒地板当成「已过期」，这里必须仍然算在飞。
+  fakeNow = NOW + 2_000
+  check('窗口内的租约不会被误判过期', reactive.of('buddy', 'glm-5.3'), 1)
+  // 运行期把窗口改小到 6 秒后，同一个租约（年龄 7 秒）必须立刻过期——不需要重启。
+  staleOverride = 6_000
+  fakeNow = NOW + 7_000
+  check('改小 staleMs 立刻生效（不重启）', reactive.of('buddy', 'glm-5.3'), 0)
+  liveLease.release()
+  // 地板与 config.js 的 clamp 下限一致（5 秒），而不是旧的 1 秒。
+  const floored = createInflight({ clock: () => NOW + 4_000, staleMs: () => 1 })
+  floored.begin('buddy', 'glm-5.3')
+  check('地板是 5 秒：4 秒年龄仍在窗口内', floored.of('buddy', 'glm-5.3'), 1)
 }
 
 console.log('\n' + (failures === 0 ? 'PASS' : 'FAIL') + ' — ' + (checks - failures) + '/' + checks)

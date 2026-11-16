@@ -27,7 +27,7 @@
  * @module src/router
  */
 
-import { STRATEGIES, EFFORT_RANK, EFFORT_STRATEGY, DEFAULT_CONFIG } from './policy-defaults.js'
+import { STRATEGIES, EFFORT_RANK, EFFORT_STRATEGY, DEFAULT_CONFIG, MAX_INTEL } from './policy-defaults.js'
 import { laneVerdict } from './lanes.js'
 import { PENALTY_TAGS } from './families.js'
 
@@ -93,7 +93,8 @@ const MIN_SAMPLES = 2
 const DEFAULT_GATE_MS = 10_000
 
 /** Highest measured intelligence in the report; used to normalize the scale. */
-const MAX_INTEL = 46
+// MAX_INTEL 的唯一事实来源是 policy-defaults.js（catalog.js 的归一化用它）；
+// 本文件只 re-export（见文件末），不再自写一份 46（FIX 2026-11-16）。
 
 /**
  * Which strategy applies to this step.
@@ -323,9 +324,14 @@ export function scoreLane(row, needs, strategy, health, current, config, now = D
   const state = health.stateOf(row.provider, row.model)
   const latency = latencyFor(row, health, now, { staleLatencyMode: config.staleLatencyMode })
   const gate = Number(config.latencyGateMs ?? DEFAULT_GATE_MS)
-  const speed = latency.ms === null || !(gate > 0)
+  // 没有 live 样本时用渠道先验，而不是全局中性常数 0.5（LOCAL PATCH 2026-11-16）。
+  // 新接入的渠道必然没有样本，旧逻辑把「刚接进来」直接钉成中性分，等于让它永远
+  // 赢不了已有 live 数据的车道——那不是它慢，只是没人测过它。
+  const priorMs = Number.isFinite(row.ttftPriorMs) && row.ttftPriorMs > 0 ? row.ttftPriorMs : null
+  const speedMs = latency.ms === null ? priorMs : latency.ms
+  const speed = speedMs === null || !(gate > 0)
     ? 0.5
-    : 1 / (1 + latency.ms / gate)
+    : 1 / (1 + speedMs / gate)
 
   const quality = Number.isFinite(row.quality) ? row.quality : 0.5
   const healthTerm = healthFactor(state.strikes)
@@ -338,7 +344,10 @@ export function scoreLane(row, needs, strategy, health, current, config, now = D
     ? 0
     : Number(today.inputTokens ?? 0) + Number(today.outputTokens ?? 0)
   const usageUnit = Math.max(10_000, Number(config.usageUnitTokens ?? 2_000_000))
-  const usage = 1 / (1 + used / usageUnit)
+  // 无限额度档（free-pi）：用量与可用性无关，usage 项必须失效（固定 1）。
+  // 否则「这个渠道用得最多」会被当成「这个渠道快用完了」，把最该用的车道压下去，
+  // 反过来逼调度去用真花钱的渠道——正是额度被烧穿的机制。
+  const usage = row.unlimited === true ? 1 : 1 / (1 + used / usageUnit)
 
   const isCurrent = current !== null && current !== undefined
     && current.provider === row.provider && current.model === row.model
@@ -404,7 +413,13 @@ export function scoreLane(row, needs, strategy, health, current, config, now = D
     - errorPenalty
     - windowRisk
     - concurrent
-  const utility = baseUtility + anchor
+  // 免费车道的离散加分：cost 项在小 burn 区间饱和，分不出「免费」与「一七折」。
+  // 无限额度档拿满额，免费有上限的渠道拿六成；付费车道不加。
+  const freeBonusCap = Math.min(0.3, Math.max(0, Number(config.freeLaneBonus ?? DEFAULT_CONFIG.freeLaneBonus)))
+  const freeBonus = row.unlimited === true
+    ? freeBonusCap
+    : (row.freeLane === true ? freeBonusCap * 0.6 : 0)
+  const utility = baseUtility + anchor + freeBonus
 
   return {
     utility,
@@ -419,6 +434,11 @@ export function scoreLane(row, needs, strategy, health, current, config, now = D
       ttftMs: latency.ms,
       latencySource: latency.source,
       samples: latency.samples,
+      speedMs: round(speedMs === null ? 0 : speedMs),
+      ttftPriorMs: priorMs,
+      unlimited: row.unlimited === true,
+      billingSource: row.billingSource ?? 'name',
+      freeBonus: round(freeBonus),
       strikes: round(state.strikes),
       intel: row.intel ?? null,
       anchor: isCurrent,
@@ -466,69 +486,132 @@ export function evaluate(input) {
 
   let all = inspectAll(false)
 
-  // ── 本 step 内「这个家族不用再试了」（LOCAL PATCH 2026-11-14）────────────────
+  // ── 两道掩码（家族停车 / 渠道互借）────────────────────────────────────────
   //
-  // 事实：偏好家族 deepseek-v4.1-flash 挂 16 条同名车道，其中 13 条可能同时不可用
-  // （未登录 / 未订阅 / 额度到中午 / 被屏蔽 / 安全拦截）。失败恢复的既有规则是
-  // "先在同一家族换个渠道"，于是三次 maxSwitchesPerStep 全花在同一个家族的兄弟
-  // 车道上，整轮以最后一个错误结束——连"换一个模型"这一步都没走到。用户看到的就是
-  // "经常报错、经常停止"。
+  // 历史（LOCAL PATCH 2026-11-14）：偏好家族 deepseek-v4.1-flash 挂 16 条同名车道，
+  // 其中十几条可能同时是「未登录 / 未订阅 / 额度到中午 / 被屏蔽 / 安全拦截」，而失败
+  // 恢复的既有规则是「先在同一家族换个渠道」——三次换道预算全烧在兄弟车道上，整轮
+  // 以最后一个错误结束。家族停车就是为这件事加的。
   //
-  // 判据的边界（为什么必须带 survivor 守卫）：这条规则只在**过滤之后仍有别的家族
-  // 可用**时才生效。否则一个只挂了一两个家族的目录会因为"这个家族刚失败过"直接变成
-  // 全灭，把一次瞬时故障升级成整轮失败——比它要修的问题更贵。
+  // 2026-11-16 重构（FIX）：旧实现是两个互相读对方结果的掩码，于是出现判据循环——
+  //   · 家族侧用「过滤后还有别的家族」当守卫，而那个「别的家族」可能是随后必然被
+  //     互借掩码挡住的借入车道 → 一个已经停掉的家族被重新放行；
+  //   · 互借侧用同一个 all 数「本机是否还有活车道」，于是本机车道被家族停车挡掉时，
+  //     闸门反着生效：借入车道在最不该参战的时候参战（实测可用构造用例复现）。
+  //
+  // 现在分两步，谁都不读对方的渲染结果：
+  //   1. 先算资格：以「初始合格」集合为输入，算出本机哪些家族必须停；
+  //   2. 再渲染：逐个条目应用掩码，原位保留原因串，任何条目都不会被重建。
+  // 家族停车的守卫对象是 **local 车道**（借入车道从来不是「本机还有别的选择」的证据），
+  // 且级联求解：某家族被停后不再能为另一个家族当 survivor。
+  const memberCount = new Map()
+  const hasBorrowedSibling = new Map()
+  for (const entry of all) {
+    if (entry.inspection.eligible !== true) continue
+    const familyKey = entry.row.key ?? entry.row.family ?? entry.row.model
+    memberCount.set(familyKey, (memberCount.get(familyKey) ?? 0) + 1)
+    if (entry.row.borrowed === true) hasBorrowedSibling.set(familyKey, true)
+  }
+  const localAliveRegardless = [...memberCount.entries()]
+    .some(([key, count]) => count > (hasBorrowedSibling.get(key) === true ? 1 : 0))
+
   const excludedFamilies = input.excludeFamilies
+  const parkedFamilies = new Set()
   if (excludedFamilies !== null && excludedFamilies !== undefined && excludedFamilies.size > 0) {
     const familyOf = entry => entry.row.key ?? entry.row.family ?? entry.row.model
-    const survivor = all.some(entry => entry.inspection.eligible && !excludedFamilies.has(familyOf(entry)))
-    if (survivor) {
-      all = all.map(entry => (excludedFamilies.has(familyOf(entry))
-        ? {
-            row: entry.row,
-            inspection: {
-              eligible: false,
-              familyParked: true,
-              reason: '同一家族在本步骤内已连续失败，本轮改试其它模型',
-            },
-          }
-        : entry))
+    const wanted = [...new Set(all.filter(entry => entry.inspection.eligible === true)
+      .map(familyOf)
+      .filter(key => excludedFamilies.has(key)))]
+    // 从小到大处理，让级联判定与顺序无关。
+    wanted.sort((a, b) => (memberCount.get(a) ?? 0) - (memberCount.get(b) ?? 0))
+    for (const key of wanted) {
+      let survivors = 0
+      for (const [other, count] of memberCount) {
+        if (other === key || parkedFamilies.has(other)) continue
+        survivors += count
+      }
+      // 守卫：只在「本机停掉这个家族之后仍有本机车道可用」时才停它。否则一个只挂一两个
+      // 家族的目录会因为「这个家族刚失败过」直接变成全灭——比它要修的问题更贵。
+      if (survivors > 0 || localAliveRegardless !== true) parkedFamilies.add(key)
     }
   }
 
-  // ── 渠道互借：借用车道默认只在「本机全灭」时才参战 ─────────────────────────
-  // 互借的语义是兜底，不是常态：把借来的额度当成首选，等于用对侧的账号替本机烧钱，
-  // 而且一旦对侧断线，本机明明有可用车道却先撞墙。所以 exhausted 模式下先看本机：
-  // 只要本机还有任何一条合格车道，借用车道这一轮就不进入打分。
-  // `borrowed` 由目录层打在行上（provider === config.peerShare.peerProvider）。
-  const peer = config?.peerShare
-  if (peer !== null && peer !== undefined && peer.enabled === true) {
-    if (peer.borrowUsable === false) {
-      // 端点不可达 / 清单没拉到（LOCAL PATCH 2026-11-04）：借入车道这一轮一律不参战，
-      // 无论 borrowWhen 是 exhausted 还是 always。判据来自借用方适配器自己
-      // （src/peershare-adapter.js 的 usable），它是唯一知道端点通不通的地方。
-      // 2026-11-04 00:09 的事故就是缺了这一条：对侧端口已经没了，本机还按旧清单
-      // 把整轮请求派过去，三次换道全撞同一个 ECONNREFUSED，agent turn failed。
-      all = all.map(entry => (entry.row.borrowed === true
-        ? { row: entry.row, inspection: { eligible: false, borrowedIdle: true, reason: '互借：对侧端点不可达或清单失效，借入车道本轮不参战' } }
-        : entry))
-    } else if (peer.borrowWhen !== 'always') {
-      const localAlive = all.some(entry => entry.inspection.eligible && entry.row.borrowed !== true)
-      if (localAlive) {
-        all = all.map(entry => (entry.row.borrowed === true
-          ? { row: entry.row, inspection: { eligible: false, borrowedIdle: true, reason: '互借：本机仍有可用车道，借来的额度留作兜底' } }
-          : entry))
-      }
-    }
-  }
+  // 互借闸门：只要本机还有任何一条合格车道，借入车道这一轮就不进入打分。判据只数 local
+  // 车道（borrowed !== true）：借来的那条不算「本机还有别的选择」。
+  // 互借闸门只有两个判据，且都指向「抑制」：
+  //   1. 端点不可达 / 清单失效（borrowUsable === false）→ 借入车道一律不参战；
+  //   2. exhausted 模式下，本机仍有**合格且未被家族停车**的 local 车道 → 留作兜底。
+  // 名字是「抑制」而不是「允许」——上一版把布尔写反，端点已死时反而不掩码，构造用例当场
+  // 把借入车道选了出来。
+  const endpointDown = config?.peerShare?.borrowUsable === false
+  const localCandidateLeft = all.some(entry => entry.inspection.eligible === true
+    && entry.row.borrowed !== true
+    && !parkedFamilies.has(entry.row.key ?? entry.row.family ?? entry.row.model))
+  const borrowedSuppressed = config?.peerShare?.enabled === true
+    && (endpointDown
+      || (config.peerShare.borrowWhen !== 'always' && localCandidateLeft))
+
+  // ── 三类掩码的判定（谁也不读对方的渲染结果）──────────────────────────────
+  //
+  // 早先的写法在掩码之后调 all = inspectAll(true)，那个构造器是对原始 rows 的 map ——
+  // 一次赋值把刚上好的掩码整表丢掉：被本步骤停掉的家族与「本机还有活车道故留作兜底」的
+  // 借入车道全部复活成合格候选。仅把重建改成「只重判合格条目」还不够：inspectLane 是纯
+  // 判定，它对刚被掩码判掉的条目一无所知，于是 familyParked / borrowedIdle 在返回给调用方
+  // 之前被重新抹掉（实测：borrowUsable=false 时借入车道复活并被选中）。
+  //
+  // 所以三类掩码一律只**记录判定**，统一的改动只发生在下面那一次渲染里：
+  //   · vision 回退：本机没有「有资格的、非借入的」视觉车道时，允许无视觉能力的车道顶一下
+  //     （只改打分口径与原因，不改谁有资格参战）；
+  //   · 家族停车：见上面那段（级联 + local 守卫）；
+  //   · 互借闸门：本机仍有合格 local 车道时，借入车道留作兜底。
   let visionFallback = false
   if (needs.vision) {
-    const visionLane = all.some(entry => entry.inspection.eligible && entry.row.vision === true)
-    if (!visionLane) {
-      all = inspectAll(true)
-      visionFallback = true
-    }
+    const hasVisionLane = all.some(entry => entry.inspection.eligible === true
+      && entry.row.vision === true
+      && entry.row.borrowed !== true
+      && !parkedFamilies.has(entry.row.key ?? entry.row.family ?? entry.row.model))
+    if (!hasVisionLane) visionFallback = true
   }
-
+  all = all.map(entry => {
+    const familyKey = entry.row.key ?? entry.row.family ?? entry.row.model
+    if (entry.inspection.eligible !== true) {
+      // 只对「被图片要求挡住」的条目做回退（FIX 2026-11-16）：这类条目此前从来没有进过
+      // 评分面，回退是唯一能让这一步跑下去的办法。被策略掩码判掉的条目（家族停车 /
+      // 借入闸门）保持原样——那两类属于设计意图，不能借回退复活。
+      if (visionFallback !== true
+        || entry.row.vision === true
+        || entry.inspection.familyParked === true
+        || entry.inspection.borrowedIdle === true) return entry
+      return { row: entry.row, inspection: inspectLane(entry.row, { ...base, visionFallback: true }) }
+    }
+    if (parkedFamilies.has(familyKey)) {
+      return {
+        row: entry.row,
+        inspection: {
+          eligible: false,
+          familyParked: true,
+          reason: '同一家族在本步骤内已连续失败，本轮改试其它模型',
+        },
+      }
+    }
+    if (visionFallback === true && entry.row.vision !== true) {
+      // 合格但无视觉能力的车道：同样标记为回退（吃 fallbackPenalty），让面板解释得通。
+      return { row: entry.row, inspection: inspectLane(entry.row, { ...base, visionFallback: true }) }
+    }
+    if (entry.row.borrowed === true && borrowedSuppressed === true) {
+      return {
+        row: entry.row,
+        inspection: {
+          eligible: false,
+          borrowedIdle: true,
+          reason: endpointDown
+            ? '互借：对侧端点不可达或清单失效，借入车道本轮不参战'
+            : '互借：本机仍有可用车道，借来的额度留作兜底',
+        },
+      }
+    }
+    return entry
+  })
   const current = input.anchor ?? null
   const inflight = input.inflight ?? null
   const lanes = []

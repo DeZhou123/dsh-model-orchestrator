@@ -41,12 +41,21 @@ function normalize(value) {
  *
  * @param {{
  *   clock?: () => number,
- *   staleMs?: number,
+ *   staleMs?: number | (() => number),
  * }} [options]
  */
 export function createInflight(options = {}) {
   const clock = options.clock ?? (() => Date.now())
-  const staleMs = Math.max(1000, Number(options.staleMs ?? 15 * 60_000))
+  // staleMs 允许传函数（FIX 2026-11-16）。旧写法在构造时快照一次，于是
+  // concurrencyStaleMs 虽然在 MUTABLE_KEYS 里、面板也放它改，运行期改动却毫无效果
+  // ——只有重启才生效，而且面板不提示。惰性取值让「面板上能改」与「真的会变」一致。
+  const staleMs = () => {
+    const raw = typeof options.staleMs === 'function' ? options.staleMs() : options.staleMs
+    const value = Number(raw)
+    // 地板与 src/config.js 的 clamp 下限（5000ms）保持一致。旧写法是 Math.max(1000, …)，
+    // 于是任何小于 1 秒的合法配置都被静默抬回 1 秒——「改了没反应」的另一种形态。
+    return Number.isFinite(value) && value > 0 ? Math.max(5_000, value) : 15 * 60_000
+  }
 
   /**
    * Live leases only. A lease is kept here until `end`, and read through
@@ -63,7 +72,7 @@ export function createInflight(options = {}) {
         live.delete(lease)
         continue
       }
-      if (now - lease.at > staleMs) live.delete(lease)
+      if (now - lease.at > staleMs()) live.delete(lease)
     }
   }
 
