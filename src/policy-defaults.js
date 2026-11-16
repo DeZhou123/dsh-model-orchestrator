@@ -105,6 +105,32 @@ export const STRATEGIES = {
  * 一起退出候选；并且这类换道**不消耗**步骤/回合换道预算（改用按回合的独立配额，
  * 免得真断网时无限循环）。
  */
+/**
+ * 成本项的实测修正（FIX 2026-11-16）。
+ *
+ * 旧口径的 cost 只认「渠道倍率」——而倍率是从模型显示名里刮出来的（billingSource: 'name'）。
+ * 实测反例：本机 35 天账本里 trae 吃掉了 11.4 亿输入 token、缓存重读为 **0**（每次请求
+ * 全量重发上下文，in/out ≈ 152:1），而它在打分里因为名字上写着小倍率被当成「便宜」；
+ * loomy 标着 x2.0 反而被判「贵」，可它的缓存重读是 11 亿 token —— 真实额度消耗只有
+ * trae 的零头。对免费/额度型车道，「每次调用吃多少 token」才是账单。
+ *
+ * 修正不改倍率的语义，只把它乘上一个实测因子：
+ *   effectiveIn = 每次调用输入 token × (1 − 0.9 × 缓存重读占比)
+ *   tokenFactor = 1 / (1 + effectiveIn / refIn)
+ *   cost = 倍率成本 × (1 − w + w × tokenFactor)
+ * 缓存命中的那部分按 10% 计价（这是缓存单价与新增输入价差的经验近似）。
+ */
+export const TOKEN_COST = {
+  /** 实测因子在成本项里占的权重（0 = 退回旧口径）。 */
+  weight: 0.5,
+  /** 「一次正常调用」的参考输入 token 数；超过它开始明显扣分。 */
+  refInTokens: 20_000,
+  /** 至少多少次成功样本才启用（少样本的均值不可信）。 */
+  minSamples: 3,
+  /** 缓存重读的计价折扣（1 = 完全免费，0 = 与新增输入同价）。 */
+  cacheDiscount: 0.9,
+}
+
 export const CONNECTIVITY = {
   /** 同一渠道窗口内连续多少次连接层失败才算整域不通。 */
   strikes: 3,
@@ -383,6 +409,9 @@ export const DEFAULT_CONFIG = {
   maxSwitchesPerStep: 5,
   /** 预算外的「宁可换也不要死」余量（原 index.js 的硬编码 EXTRA_SWITCHES = 2）。 */
   switchOverdraft: 2,
+  /** 成本项的实测修正权重与参考输入量（见 TOKEN_COST）。 */
+  tokenCostWeight: TOKEN_COST.weight,
+  tokenCostRefInTokens: TOKEN_COST.refInTokens,
   /** Maximum automatic route changes inside one turn. */
   maxSwitchesPerTurn: 16,
   /**

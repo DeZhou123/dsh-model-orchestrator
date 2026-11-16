@@ -467,7 +467,21 @@ export function classifyFailure(failure, context = {}) {
 
 /** Empty per-lane counters. */
 function emptyCounters() {
-  return { calls: 0, errors: 0, inTok: 0, outTok: 0, ttftSum: 0, ttftN: 0, ttftEwma: 0, tpsSum: 0, tpsN: 0 }
+  return {
+    calls: 0,
+    errors: 0,
+    inTok: 0,
+    outTok: 0,
+    // 缓存重读的输入（单价通常比新增输入低一个数量级，但不为零）。实测里它区分度极高：
+    // 同一段时间 trae 的 cacheRead = 0、loomy = 11 亿 —— 「每次全量重发上下文」的车道
+    // 看起来倍率很便宜，实际把免费额度吃得最快（FIX 2026-11-16）。
+    cacheReadTok: 0,
+    ttftSum: 0,
+    ttftN: 0,
+    ttftEwma: 0,
+    tpsSum: 0,
+    tpsN: 0,
+  }
 }
 
 /**
@@ -1036,6 +1050,7 @@ export function createHealth(options = {}) {
     const output = Number(observation.outputTokens ?? 0)
     record.counters.inTok += Number.isFinite(input) ? input : 0
     record.counters.outTok += Number.isFinite(output) ? output : 0
+    if (Number.isFinite(observation.cacheReadTokens)) record.counters.cacheReadTok += Math.max(0, observation.cacheReadTokens)
 
     const bucket = bucketFor(provider, model)
     bucket.in += Number.isFinite(input) ? input : 0
@@ -1153,6 +1168,13 @@ export function createHealth(options = {}) {
       calls: counters.calls,
       errors: counters.errors,
       lastOkAt: Number(record.lastOkAt ?? 0),
+      // 实测用量口径（FIX 2026-11-16）：每次成功调用平均吃掉多少输入/输出 token，
+      // 以及缓存重读占输入的比例。路由用它修正「从模型名刮出来的倍率」。
+      tokensPerCall: counters.calls > 0
+        ? { in: counters.inTok / counters.calls, out: counters.outTok / counters.calls }
+        : null,
+      cacheReuse: counters.inTok > 0 ? counters.cacheReadTok / counters.inTok : null,
+      cacheReadTokens: counters.cacheReadTok,
     }
   }
 

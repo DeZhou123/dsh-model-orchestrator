@@ -1475,5 +1475,55 @@ console.log('\n[20] 2026-11-16 批 3 回归：故障域短路（连接层失败�
   const routed = selectRoute({ rows, health: h3, config: cfg, anchor: null, needs: readNeeds({}, cfg), mode: 'auto' })
   check('整域短路后路由整片跳过该渠道', routed?.provider, 'buddy')
 }
-console.log('\n' + (failures === 0 ? 'PASS' : 'FAIL') + ' — ' + (checks - failures) + '/' + checks)
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('\n[21] 2026-11-16 批 4 回归：成本项改用实测 token（不再只看模型名里的倍率）')
+
+{
+  const cfg = resolveConfig({}, {})
+  const needs = readNeeds({}, cfg)
+  const cheapName = lane('trae', 'resend-all', { burn: 0.11, quality: 0.8, intel: 45 })
+  const reuse = lane('loomy', 'cache-heavy', { burn: 0.11, quality: 0.8, intel: 45 })
+
+  // 没有任何样本时：两条车道完全等价（实测修正不启用）
+  const empty = createHealth({ userDir: null, clock })
+  const a0 = scoreLane(cheapName, needs, 'balanced', empty, null, cfg)
+  const b0 = scoreLane(reuse, needs, 'balanced', empty, null, cfg)
+  checkThat('无样本时不启用实测修正（两条等价）',
+    a0.parts.cost === b0.parts.cost && a0.parts.tokenCostFactor === 1,
+    JSON.stringify([a0.parts.cost, b0.parts.cost, a0.parts.tokenCostFactor]))
+
+  // 实测：一条每次重发 30 万 token、缓存为 0；另一条每次 2 万、其中 1.6 万命中缓存
+  const measured = createHealth({ userDir: null, clock })
+  for (let index = 0; index < 5; index += 1) {
+    measured.markSuccess('trae', 'resend-all', { ttftMs: 1000, inputTokens: 300_000, outputTokens: 2_000, cacheReadTokens: 0 })
+    measured.markSuccess('loomy', 'cache-heavy', { ttftMs: 1000, inputTokens: 20_000, outputTokens: 2_000, cacheReadTokens: 16_000 })
+  }
+  const a1 = scoreLane(cheapName, needs, 'balanced', measured, null, cfg)
+  const b1 = scoreLane(reuse, needs, 'balanced', measured, null, cfg)
+  checkThat('每次重发大上下文且缓存为 0 的车道被成本项压下去',
+    a1.parts.cost < a1.parts.costBase,
+    JSON.stringify([a1.parts.costBase, a1.parts.cost, a1.parts.tokenCostFactor]))
+  checkThat('缓存重读高、每次输入少的车道成本分更高',
+    b1.parts.cost > a1.parts.cost,
+    JSON.stringify([a1.parts.cost, b1.parts.cost]))
+  check('实测口径下车道排名由用量决定',
+    b1.utility > a1.utility, true)
+  check('panel 能看到每调用输入 token 与缓存占比',
+    [a1.parts.perCallInputTokens, a1.parts.cacheReuse, b1.parts.cacheReuse],
+    [300000, 0, 0.8])
+
+  // 把权重关掉 = 退回旧口径（倍率成本）
+  const offCfg = resolveConfig({ tokenCostWeight: 0 }, {})
+  const a2 = scoreLane(cheapName, needs, 'balanced', measured, null, offCfg)
+  checkThat('tokenCostWeight=0 时退回旧口径',
+    a2.parts.cost === a2.parts.costBase, JSON.stringify([a2.parts.cost, a2.parts.costBase]))
+
+  // 样本不足时不启用（3 次以下均值不可信）
+  const thin = createHealth({ userDir: null, clock })
+  thin.markSuccess('trae', 'resend-all', { ttftMs: 1000, inputTokens: 300_000, outputTokens: 2_000, cacheReadTokens: 0 })
+  const a3 = scoreLane(cheapName, needs, 'balanced', thin, null, cfg)
+  checkThat('样本不足 3 次时不启用实测修正',
+    a3.parts.cost === a3.parts.costBase, JSON.stringify([a3.parts.cost, a3.parts.costBase]))
+}console.log('\n' + (failures === 0 ? 'PASS' : 'FAIL') + ' — ' + (checks - failures) + '/' + checks)
 if (failures > 0) process.exitCode = 1

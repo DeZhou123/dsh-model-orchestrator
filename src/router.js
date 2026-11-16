@@ -27,7 +27,7 @@
  * @module src/router
  */
 
-import { STRATEGIES, EFFORT_RANK, EFFORT_STRATEGY, DEFAULT_CONFIG, MAX_INTEL } from './policy-defaults.js'
+import { STRATEGIES, EFFORT_RANK, EFFORT_STRATEGY, DEFAULT_CONFIG, MAX_INTEL, TOKEN_COST } from './policy-defaults.js'
 import { laneVerdict } from './lanes.js'
 import { PENALTY_TAGS } from './families.js'
 
@@ -337,7 +337,33 @@ export function scoreLane(row, needs, strategy, health, current, config, now = D
   const healthTerm = healthFactor(state.strikes)
 
   const burn = Number.isFinite(row.burn) ? row.burn : 0.45
-  const cost = 1 / (1 + burn)
+  const costBase = 1 / (1 + burn)
+  // ── 成本项的实测修正（FIX 2026-11-16）────────────────────────────────────
+  //
+  // 倍率是从模型显示名里刮出来的（billingSource: 'name'），它描述「单价」，
+  // 而免费/额度型车道的账单是「每次调用吃多少 token」。本机实测反例：trae 35 天吃掉
+  // 11.4 亿输入 token、缓存重读 0（in/out ≈ 152:1），因为名字写着小倍率被判「便宜」；
+  // 标着 x2.0 的 loomy 缓存重读 11 亿，真实消耗只有零头却被判「贵」。
+  //
+  // 修正只做乘法（不改五项权重的语义）：缓存命中的部分按 TOKEN_COST.cacheDiscount
+  // 折扣计价，再按参考输入量折算成 0..1 的因子。样本不足（< minSamples）时不启用。
+  const tokenWeight = Math.max(0, Math.min(1, Number(config.tokenCostWeight ?? TOKEN_COST.weight)))
+  const tokenStats = tokenWeight > 0 && typeof health?.observed === 'function'
+    ? health.observed(row.provider, row.model)
+    : null
+  const tokenSamples = Number(tokenStats?.calls ?? 0)
+  const perCallIn = Number(tokenStats?.tokensPerCall?.in ?? 0)
+  const cacheReuse = Number(tokenStats?.cacheReuse ?? 0)
+  const tokenMeasured = tokenWeight > 0
+    && tokenSamples >= TOKEN_COST.minSamples
+    && Number.isFinite(perCallIn)
+    && perCallIn > 0
+  const refIn = Math.max(1000, Number(config.tokenCostRefInTokens ?? TOKEN_COST.refInTokens))
+  const effectiveIn = tokenMeasured
+    ? perCallIn * (1 - TOKEN_COST.cacheDiscount * Math.max(0, Math.min(1, cacheReuse)))
+    : 0
+  const tokenFactor = tokenMeasured ? 1 / (1 + effectiveIn / refIn) : 1
+  const cost = tokenMeasured ? costBase * (1 - tokenWeight + tokenWeight * tokenFactor) : costBase
 
   const today = channelStats(row)
   const used = today === null
@@ -429,6 +455,10 @@ export function scoreLane(row, needs, strategy, health, current, config, now = D
       speed: round(speed),
       health: round(healthTerm),
       cost: round(cost),
+      costBase: round(costBase),
+      tokenCostFactor: round(tokenFactor),
+      perCallInputTokens: Math.round(perCallIn),
+      cacheReuse: round(cacheReuse),
       usage: round(usage),
       burn: round(burn),
       ttftMs: latency.ms,
