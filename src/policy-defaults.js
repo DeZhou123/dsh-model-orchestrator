@@ -168,15 +168,29 @@ export const COOLDOWN = {
    */
   credential: 12 * 60 * 60_000,
   /**
-   * 订阅/套餐不可用（试用到期、未订阅该模型）。
+   * 订阅/套餐不可用（试用到期、未订阅该模型、需付费积分）。
    *
    * 实测：qoder/qodercn 返回 `{"pricingUrl":...} (112/model_error)` 与
    * cline `Error 403: the user is not subscribed to required model plan`——三天内
    * 合计 55 次重试。它们既不匹配 QUOTA_TEXT（没有 quota/额度字样）也不匹配
    * AUTH 的语义（凭据是好的，是**套餐**不在），旧代码把它们判成 30 秒的 transient，
-   * 于是每一轮都在撞同一堵墙。6 小时停车，用成功调用或手动点击恢复。
+   * 于是每一轮都在撞同一堵墙。
+   *
+   * LOCAL PATCH 2026-11-20：6h → 24h。套餐问题不会自己好，6 小时意味着一天回锅
+   * 4 次、每次撞墙都烧一次真实请求；24 小时把回锅降到一天一次，成功调用或手动
+   * 恢复仍然即时清账。free-pi 的 `needs premium credits` 也归这一类（见 health.js
+   * 的 PREMIUM_TEXT），此前被 QUOTA_TEXT 的 credit 一词误判成每日额度、天天回锅。
    */
-  plan: 6 * 60 * 60_000,
+  plan: 24 * 60 * 60_000,
+  /**
+   * 模型退役/EOL（LOCAL PATCH 2026-11-20）。
+   *
+   * 实测：our-free-model 的 deepseek-v4.1-flash 于 2026-11-16 EOL，上游明说
+   * `has reached its end of life … no longer available`，旧分类器不认识这句话，
+   * 判成 30 秒 transient——于是一条**永久**死掉的模型每半小时被重新选中一次。
+   * EOL 是永久事实，7 天長停车；模型若复活，一次成功调用即清账。
+   */
+  retired: 7 * 24 * 60 * 60_000,
   unavailable: 10 * 60_000,
   region: 24 * 60 * 60_000,
   quotaFallback: 60 * 60_000,

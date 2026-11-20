@@ -56,7 +56,7 @@ export const name = 'model-orchestrator'
 /** `llm` is what the plugin exists for. The rest degrades feature by feature. */
 export const inject = ['llm']
 
-export const version = '2.15.0'
+export const version = '2.16.0'
 
 /**
  * 这条 provider 是不是「借来的聚合车道」。
@@ -210,9 +210,60 @@ export function apply(ctx, rawConfig = {}) {
   }
 
   const readOverrides = () => readJson(overridesFile)
+  // 配置审计（LOCAL PATCH 2026-11-20）：overrides.json 一个月内被无记录改动至少
+  // 3 次（prefer→off→prefer），每次都是事后体检才发现。每次经插件写入都留一条
+  // diff 审计（时间、改了哪些键、从什么到什么）；直接改文件绕过插件的漂移由
+  // 下面的启动自检兜住。审计只追加，超 200KB 截留最近 100 行。
+  const auditFile = path.join(userDir, 'overrides-audit.jsonl')
+
+  // 契约漂移检测（LOCAL PATCH 2026-11-20）：启动时与每次插件写入后各跑一次。
+  // AGENTS.md 常驻契约：mode=auto + strategy=economy + 计费渠道常驻 deny。
+  // 只告警不自动改回——用户显式改配置是合法操作，但要看得见。
+  const checkContractDrift = (cfg, logger) => {
+    try {
+      const drift = []
+      if (cfg.mode !== 'auto') drift.push({ key: 'mode', expected: 'auto', actual: cfg.mode })
+      if (cfg.strategy !== 'economy') drift.push({ key: 'strategy', expected: 'economy', actual: cfg.strategy })
+      for (const billed of ['deepseek-official', 'deepseek-account']) {
+        if (!Array.isArray(cfg.denyProviders) || !cfg.denyProviders.includes(billed)) {
+          drift.push({ key: 'denyProviders', expected: '包含 ' + billed, actual: (cfg.denyProviders || []).join(',') || '(空)' })
+        }
+      }
+      const alertFile = path.join(userDir, 'drift-alert.json')
+      if (drift.length > 0) {
+        const alert = { status: 'drift', at: new Date().toISOString(), contract: 'AGENTS.md 模型选择契约', drift }
+        fs.writeFileSync(alertFile, JSON.stringify(alert, null, 2))
+        logger?.warn?.('[model-orchestrator] 配置漂移告警：' + drift.map(d => `${d.key} 期望 ${d.expected}，实际 ${d.actual}`).join('；') + '。详见 model-orchestrator/drift-alert.json')
+      } else if (fs.existsSync(alertFile)) {
+        fs.writeFileSync(alertFile, JSON.stringify({ status: 'ok', at: new Date().toISOString() }, null, 2))
+      }
+    } catch { /* 自检失败不影响调度 */ }
+  }
+
   const writeOverrides = (value) => {
     try {
+      const prev = readOverrides() ?? {}
       writeJsonAtomic(overridesFile, value)
+      try {
+        checkContractDrift(resolveConfig(rawConfig, value), ctx.logger)
+      } catch { /* 写入后自检失败不影响审计 */ }
+      try {
+        const changes = {}
+        for (const key of new Set([...Object.keys(prev), ...Object.keys(value)])) {
+          if (JSON.stringify(prev[key]) !== JSON.stringify(value[key])) {
+            changes[key] = { from: prev[key], to: value[key] }
+          }
+        }
+        if (Object.keys(changes).length > 0) {
+          fs.appendFileSync(auditFile, JSON.stringify({ at: new Date().toISOString(), via: 'plugin', changes }) + '\n')
+          if (fs.statSync(auditFile).size > 200_000) {
+            const lines = fs.readFileSync(auditFile, 'utf8').trim().split('\n')
+            fs.writeFileSync(auditFile, lines.slice(-100).join('\n') + '\n')
+          }
+        }
+      } catch {
+        /* 审计失败不影响配置写入 */
+      }
     } catch {
       /* keep the in-memory value even when it cannot be persisted */
     }
@@ -225,6 +276,9 @@ export function apply(ctx, rawConfig = {}) {
     patch: { ...(rawConfig ?? {}) },
   }
   if (runtime.config.enabled === false) return
+
+  // ── 契约漂移自检（启动时一次；写入后由 writeOverrides 内再检）────────────
+  checkContractDrift(runtime.config, ctx.logger)
 
   // The ledger is created after `runtime` because its repeated-rejection policy
   // is read from the live config on every failure: the panel may change the
@@ -298,7 +352,20 @@ export function apply(ctx, rawConfig = {}) {
     },
     onFailure: (failure) => {
       const state = failure.sessionId === undefined ? undefined : sessions.get(failure.sessionId)
-      if (state !== undefined) state.lastFailureAt = Date.now()
+      if (state === undefined) return
+      state.lastFailureAt = Date.now()
+      // 流式中途抛错/零输出到不了 agent/request-error 的 recover 路径
+      // （LOCAL PATCH 2026-11-20）：旧代码只记 lastFailureAt，车道要等冷却账本
+      // 生效才被避开——短冷却（30s）内 autoResume 续跑可能再撞同一条。这里把
+      // 失败车道直接计入本步/本轮死车道集合，与 recover 的排除面一致。
+      // 只认 agent 循环调用（purpose 为空）；用户主动停止（ABORTED）车道无罪。
+      if ((failure.thrown === true || failure.empty === true)
+        && failure.purpose === undefined
+        && String(failure.failure?.code ?? '').toUpperCase() !== 'ABORTED') {
+        const deadKey = laneKey(failure.provider, failure.model)
+        if (state.stepDeadLanes instanceof Set) state.stepDeadLanes.add(deadKey)
+        if (state.turnDeadLanes instanceof Set) state.turnDeadLanes.add(deadKey)
+      }
     },
   })
 
@@ -1499,7 +1566,8 @@ export function apply(ctx, rawConfig = {}) {
     // 整本账（实测 611KB）的同步 JSON.stringify + 写文件，且绕过 15 秒节流：一个步骤最多会
     // 在错误路径上做 7 次全量写（maxSwitchesPerStep 5 + 超额 2），全部发生在最需要及时响应的
     // 那一刻。现在只标脏，交给节流定时器（persistIntervalMs）与卸载时的持久化。
-    // 代价：进程被硬杀会丢掉最后 ≤15 秒的冷却状态 —— 比拖慢失败恢复划算。
+    // 例外（LOCAL PATCH 2026-11-20）：≥30 分钟的长停车在 markFailure 内即时落盘——
+    // 那是稀有事件，丢在硬杀里的代价是重启后重撞 EOL/套餐/凭据的墙。
     // 这一轮里这条车道已经证明过自己不行了（LOCAL PATCH 2026-11-16）。
     //
     // 为什么必须记在会话里、而不能只靠冷却账本：冷却有长有短（瞬时 30 秒），

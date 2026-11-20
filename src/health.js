@@ -233,6 +233,26 @@ const CREDENTIAL_MISSING_TEXT = /未配置凭据|未登录|请先登录|没有�
  */
 const PLAN_TEXT = /not subscribed|subscription (?:required|needed|expired|not active)|requires? (?:a )?(?:paid|pro|premium|team|enterprise) (?:plan|subscription)|pricingUrl|套餐|订阅|试用到期|续费/i
 const PLAN_CODE_TEXT = /\(112\/model_error\)|"code"\s*:\s*112\b/i
+/**
+ * 模型退役/EOL（LOCAL PATCH 2026-11-20）。
+ *
+ * 实测：our-free-model 上游对 EOL 模型回 `The model '…' has reached its end of
+ * life on 2026-11-16T08:00:00Z and is no longer available.`——没有任何旧规则认识
+ * 这句话（`no longer available` 甚至会被 SERVER_TEXT 的 unavailable 蹭到），于是
+ * 判成 30 秒 transient，一条永久死掉的模型每半小时回锅一次。EOL 是永久事实，
+ * 按 COOLDOWN.retired 长停车；措辞刻意只认 end of life / retired / deprecated /
+ * 已下线这类**明确宣告**，不认泛化的 "not available"（那可能只是临时维护）。
+ */
+const RETIRED_TEXT = /end of life|(?:model|it) (?:has been |is )?(?:retired|deprecated|sunset)|已退役|已下线|停止提供服务/i
+/**
+ * 需要付费积分/高级额度（LOCAL PATCH 2026-11-20）。
+ *
+ * 实测：free-pi 对高级模型回 403 `This model needs premium credits. Get premium
+ * credits with /buy-credits…`。QUOTA_TEXT 的 credit 一词把它误判成**每日额度**
+ * （停到本地午夜），于是天天回锅撞同一堵墙。它其实是 PLAN 语义：不买不会好，
+ * 且同车道的免费模型不受影响，故按模型级停车。必须在 QUOTA 分支之前认出来。
+ */
+const PREMIUM_TEXT = /premium credits|buy-credits|needs? (?:a )?(?:paid|premium) (?:credits?|plan|subscription)|付费积分|高级额度/i
 const CONTEXT_TEXT = /context (window|length)|too many tokens|maximum context|上下文/i
 /**
  * A channel's own content/safety review (LOCAL PATCH 2026-10-18).
@@ -312,6 +332,32 @@ export function classifyFailure(failure, context = {}) {
     // A rejected request is ours to fix. Cooling the lane down for it would
     // punish a healthy channel for our own mistake.
     return { kind: KIND.REQUEST, cooldownMs: 0, scope: 'model', reason: message.slice(0, 200) || code, retryable: false }
+  }
+
+  // ── 模型退役/EOL：永久事实，不是瞬时故障（LOCAL PATCH 2026-11-20）──────────
+  // 放在 QUOTA/SERVER 之前：EOL 文案里的 "no longer available" 会被 SERVER_TEXT
+  // 蹭成 transient。权威码优先的原则不变——适配器自己报了结构化判决时不读文案。
+  if (code === 'MODEL_RETIRED' || (!authoritative && RETIRED_TEXT.test(detail))) {
+    return {
+      kind: KIND.UNAVAILABLE,
+      cooldownMs: COOLDOWN.retired,
+      scope: 'model',
+      reason: '模型已退役/EOL（长期停车，复活需一次成功调用证明）：' + (message === '' ? code : message.slice(0, 160)),
+      retryable: false,
+    }
+  }
+
+  // ── 付费积分/高级额度：PLAN 语义，不是每日额度（LOCAL PATCH 2026-11-20）────
+  // 必须在 QUOTA 之前：free-pi 的 `needs premium credits` 带着 credit 一词，
+  // 落进 QUOTA_TEXT 就被停到午夜、天天回锅。同车道免费模型不受影响 → 模型级。
+  if (!authoritative && PREMIUM_TEXT.test(detail)) {
+    return {
+      kind: KIND.PLAN,
+      cooldownMs: COOLDOWN.plan,
+      scope: 'model',
+      reason: '需要付费积分/高级额度（购买或改用免费模型才恢复）：' + (message === '' ? code : message.slice(0, 160)),
+      retryable: false,
+    }
   }
 
   if (QUOTA_CODES.has(code) || status === 402 || byText(QUOTA_TEXT) || (!authoritative && DAILY_QUOTA_TEXT.test(detail))) {
@@ -817,7 +863,9 @@ export function createHealth(options = {}) {
     const enabled = requestPolicy().sameKindEscalation !== false
     if (!enabled || base <= 0 || run < ESCALATION.minRun) return { cooldownMs: base, run }
     const factor = Math.min(ESCALATION.maxFactor, ESCALATION.factor ** Math.min(run - 1, 8))
-    return { cooldownMs: Math.min(cooldownCapFor(verdict.kind), base * factor), run }
+    // 升级只能延长、不能缩短（LOCAL PATCH 2026-11-20）：旧式 Math.min(cap, base×factor)
+    // 在 base 大于 cap 时会把冷却**砍到 cap**——EOL 的 7 天停车连犯两次就变 10 分钟。
+    return { cooldownMs: Math.max(base, Math.min(cooldownCapFor(verdict.kind), base * factor)), run }
   }
 
   /** Apply one failure to the ledger and return the verdict. */
@@ -994,6 +1042,11 @@ export function createHealth(options = {}) {
     }
 
     dirty = true
+    // 长停车即时落盘（LOCAL PATCH 2026-11-20）。15 秒节流对短冷却是对的（失败路径
+    // 上一步最多 7 次全量写，见 index.js recover 的 FIX 注释），但 ≥30 分钟的停车
+    // 是**稀有事件**（一天几次），丢在硬杀里的代价是「重启后重撞同一堵墙」——
+    // EOL/套餐/凭据这类墙撞一次就是一次真实请求浪费。只豁免长停车，短冷却仍走节流。
+    if (effectiveCooldownMs >= 30 * 60_000) persist()
     // The returned cooldown must be the one that is actually in effect — after
     // escalation, and (on a burst report) the deadline the ledger already holds,
     // not the fresh backoff derived from the now-higher strike count.

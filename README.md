@@ -1078,6 +1078,26 @@ node tools/client-smoke.mjs           # 44 项浏览器半身渲染校验
 `tools/build-data.mjs` 只写「实测事实」；策略（黑名单、车道提示、权重、冷却时长、effort 选择）
 在 `src/policy-defaults.js`，所以重新导入一份报告不会悄悄改变插件的行为。
 
+## 契约漂移检测与写入后自检（2026-11-20，v2.16.0）
+
+### 问题
+
+`overrides.json` 一个月内被无记录改动至少 3 次（prefer→off→prefer）。原有的漂移自检只在插件启动时（`apply`）跑一次，运行中通过面板或 API 写入配置后不再检测，导致漂移发生后要到下次重启才发现。
+
+### 修法
+
+1. 把漂移检查抽成独立函数 `checkContractDrift(cfg, logger)`。
+2. 启动时跑一次（原有行为）。
+3. `writeOverrides` 每次写入配置后再跑一次——从此运行中写入（面板保存、API 调用）也即时检测并落盘 `drift-alert.json`。
+4. 只告警不自动改回：用户显式改配置是合法操作，但要看得见。
+
+### 回归
+
+- `node tools/smoke.mjs` PASS 275/275
+- `node tools/peershare-smoke.mjs` PASS 44/44
+- `node tools/client-smoke.mjs` PASS 60/60
+- `node --check index.js` 语法通过
+
 ## 许可
 
 MIT
