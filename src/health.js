@@ -265,6 +265,20 @@ const CONTEXT_TEXT = /context (window|length)|too many tokens|maximum context|�
  * bare INVALID_REQUEST.
  */
 const SAFETY_BLOCK_TEXT = /request illegal|安全审核|安全策略拦截|safety review|"code"\s*:\s*11140|请求被拦截/i
+/**
+ * 渠道签名门禁——“你这请求不是我们的客户端发的”（LOCAL PATCH 2026-11-24）。
+ *
+ * CodeBuddy 在 2026-10-21 起对社区客户端的请求返回 403
+ * `Illegal API invocation from an unapproved channel`，WorkBuddy 另有一套
+ * `request illegal / 账号存在异常行为` 文案。它既不是安全审核（不是内容问题），
+ * 也不是额度（额度还在，同日同 model 其它账号能跑），更不是我们请求写错。
+ *
+ * 旧行为：文案没命中任何规则 → 掉进 transient 默认，只停 30 秒。于是「被风控拒」
+ * 这件事每 30 秒重试一次，把风控喂得更大——measured：buddy 10-21 首次 10 次、
+ * 11-03 起单日 35 次，一路到 11-24。签名门禁不会因为 30 秒而解除，
+ * 所以按 PLAN 语义长停车（6 小时），并在 reason 里写清是签名问题而不是额度问题。
+ */
+const CHANNEL_SIGNATURE_TEXT = /unapproved channel|illegal api invocation|not an approved (?:channel|client)|unauthorized client|客户端签名|非法调用|账号存在异常行为|异常行为，已被限制/i
 const TIMEOUT_TEXT = /timeout|timed out|超时|ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT/i
 const SERVER_TEXT = /\b5\d\d\b|internal server|bad gateway|unavailable/i
 const EMPTY_TEXT = /empty response|no content/i
@@ -311,6 +325,25 @@ export function classifyFailure(failure, context = {}) {
     return { kind: KIND.CONTEXT, cooldownMs: 0, scope: 'model', reason: '上下文窗口不足', retryable: false }
   }
 
+  // ── 渠道签名门禁：不是内容、不是额度、不是我们的请求写错（LOCAL PATCH 2026-11-24）──
+  // 放在 SAFETY 之后、REQUEST 之前：正文里的 "illegal" 会让 REQUEST_CODES 的
+  // 兜底读成「我们的请求错了」，而这类拒绝恰恰**与请求内容无关**——同一个请求换
+  // 官方客户端签名就能过。车道级停车，因为拒的是这个渠道对我们这套客户端的识别，
+  // 不是某一条模型。
+  if (!authoritative && CHANNEL_SIGNATURE_TEXT.test(detail)) {
+    return {
+      kind: KIND.PLAN,
+      // 6 小时而不是 PLAN 的 24 小时：这类门禁实测会自己解除（2026-11-24 复测
+      // buddy 两个账号在完全相同的请求头下均返回 200），而 24 小时停车会让一条
+      // 已经恢复的车道白停一天。6 小时足够让上游的风控窗口过期，又不会被
+      // 30 秒级的重试喂大。
+      cooldownMs: 6 * 60 * 60_000,
+      scope: 'lane',
+      reason: '渠道签名门禁（非额度、非内容）：' + (message === '' ? code : message.slice(0, 160)),
+      retryable: false,
+    }
+  }
+
   // Safety review first. It arrives as 400/INVALID_REQUEST, which the block
   // below would file as our own mistake — and a mistake of ours is exactly what
   // the router is forbidden to fail over from.
@@ -327,6 +360,7 @@ export function classifyFailure(failure, context = {}) {
       retryable: false,
     }
   }
+
 
   if (REQUEST_CODES.has(code) || REQUEST_SHAPE_TEXT.test(detail)) {
     // A rejected request is ours to fix. Cooling the lane down for it would

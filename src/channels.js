@@ -77,6 +77,15 @@ export function createChannelData(options = {}) {
       freeAvailability: new Map(),
       /** modelLower -> free-lane today's counters */
       freeStats: new Map(),
+      /**
+       * provider -> 上游余额快照（LOCAL PATCH 2026-11-24）。
+       *
+       * 来自 _supervisor/credits-snapshot.mjs 写出的 credits.json。它回答的是
+       * 账本**问不出来**的那个问题：这条车道在第一次调用**之前**还有没有钱。
+       */
+      credits: new Map(),
+      /** credits.json 的取样时刻；0 表示没读到。 */
+      creditsAt: 0,
       day: packDayKey(clock()),
     }
   }
@@ -191,6 +200,33 @@ export function createChannelData(options = {}) {
     return map
   }
 
+  /**
+   * 读上游余额快照。
+   *
+   * 口径（与 _supervisor/credits-snapshot.mjs 约定一致）：
+   * - 只认 providers 里出现过的 provider；查不到余额的账号记 unknown，不进 total；
+   * - `exhausted` 只有在「至少一个账号查得到 且 全部查得到的账号都是 0」时才为 true，
+   *   所以「查不到」永远不会被读成「没钱」——那是两个完全不同的修法。
+   */
+  function readCredits(raw) {
+    const map = new Map()
+    for (const [provider, row] of Object.entries(raw?.providers ?? {})) {
+      if (typeof provider !== 'string' || provider === '') continue
+      if (row === null || typeof row !== 'object') continue
+      map.set(provider.toLowerCase(), {
+        total: Number.isFinite(row.total) ? row.total : null,
+        known: Number.isFinite(row.known) ? row.known : 0,
+        unknown: Number.isFinite(row.unknown) ? row.unknown : 0,
+        exhausted: row.exhausted === true,
+        allBlocked: row.allBlocked === true,
+        nextExpiry: typeof row.rows?.find === 'function'
+          ? (row.rows.find(entry => entry !== null && typeof entry === 'object' && entry.nextExpiry)?.nextExpiry ?? null)
+          : null,
+      })
+    }
+    return map
+  }
+
   /** Re-read every local source. Missing files degrade to "no signal". */
   function refresh() {
     if (!enabled && !freeEnabled) return state
@@ -207,6 +243,12 @@ export function createChannelData(options = {}) {
           next.disabled = readDisabled(packState)
         }
         if (ledger !== undefined) next.laneStats = readLedger(ledger, next.day)
+      }
+      // 余额快照由 _supervisor/credits-snapshot.mjs 产出，落在本插件自己的目录里。
+      const credits = readJson(path.join(home, 'model-orchestrator', 'credits.json'))
+      if (credits !== undefined) {
+        next.credits = readCredits(credits)
+        next.creditsAt = Number.isFinite(credits.at) ? credits.at : 0
       }
       if (freeEnabled) {
         const availability = readJson(path.join(freeDir, 'availability.json'))
@@ -246,6 +288,7 @@ export function createChannelData(options = {}) {
     const providerKey = String(provider ?? '').toLowerCase()
     const modelKeyLower = String(model ?? '').toLowerCase()
     const account = state.accounts.get(providerKey)
+    const credit = state.credits.get(providerKey) ?? null
     const limit = account === undefined ? undefined : lookup(account.limits, modelKeyLower)
     const disabled = state.disabled.get(providerKey)?.get(modelKeyLower) === true
     const today = state.laneStats.get(modelKey(providerKey, modelKeyLower)) ?? null
@@ -254,6 +297,10 @@ export function createChannelData(options = {}) {
 
     let available = null
     if (disabled) available = false
+    // 「上游余额已归零」是**调用前**就确定的事实，不需要先失败一次才知道。
+    // 放在限流判定之前：0 额度的车道不会因为限流窗口到期而恢复。
+    else if (credit !== null && credit.exhausted) available = false
+    else if (credit !== null && credit.allBlocked) available = false
     else if (limit !== undefined && account !== undefined && account.enabled > 0 && limit.accounts >= account.enabled) {
       // Every enabled account is rate-limited for this model, which is exactly
       // the channel pack's own "cannot serve now" condition.
@@ -273,7 +320,13 @@ export function createChannelData(options = {}) {
       today,
       free,
       freeToday,
+      credit,
     }
+  }
+
+  /** 某个 provider 的余额快照；没读到返回 null。 */
+  function creditOf(provider) {
+    return state.credits.get(String(provider ?? '').toLowerCase()) ?? null
   }
 
   /** One provider's account summary for the panel. */
@@ -286,12 +339,13 @@ export function createChannelData(options = {}) {
 
   /** Whether any source was readable at all. */
   function hasData() {
-    return state.laneStats.size > 0 || state.accounts.size > 0 || state.freeAvailability.size > 0
+    return state.laneStats.size > 0 || state.accounts.size > 0 || state.freeAvailability.size > 0 || state.credits.size > 0
   }
 
   return {
     refresh,
     signal,
+    creditOf,
     providerSummary,
     hasData,
     get current() {

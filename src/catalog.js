@@ -338,6 +338,13 @@ export function createCatalog(options) {
     else if (!allow && reportDenied !== null) deniedReasonText = reportDenied
     else if (!allow && extraDeny !== undefined) deniedReasonText = `用户屏蔽：${extraDeny}`
     else if (channel?.disabled === true) deniedReasonText = '该模型在渠道面板中被关闭'
+    // 上游余额归零（LOCAL PATCH 2026-11-24）：渠道包里查得到的余额，比等它
+    // 失败一次再冷却准确得多。cline 39 天 386 次请求 0 交付就是这一条缺席的代价。
+    else if (!allow && channel?.credit?.exhausted === true) {
+      deniedReasonText = '上游余额已归零（credits.json 实测 total=0，无需重试）'
+    } else if (!allow && channel?.credit?.allBlocked === true) {
+      deniedReasonText = '账号全部被上游限制（credits.json：余额查询返回非 ACTIVE）'
+    }
 
     const tags = info.tags
     // 互借车道（2026-10-29）：provider 名等于 peerShare.peerProvider 的行是借来的，

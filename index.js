@@ -56,7 +56,7 @@ export const name = 'model-orchestrator'
 /** `llm` is what the plugin exists for. The rest degrades feature by feature. */
 export const inject = ['llm']
 
-export const version = '2.16.0'
+export const version = '2.17.0'
 
 /**
  * 这条 provider 是不是「借来的聚合车道」。
